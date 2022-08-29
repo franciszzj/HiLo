@@ -10,7 +10,7 @@ custom_imports = dict(imports=[
     'openpsg.datasets.pipelines.rel_randomcrop',
     'openpsg.models.relation_heads.approaches.matcher', 'openpsg.utils'
 ],
-                      allow_failed_imports=False)
+    allow_failed_imports=False)
 
 dataset_type = 'PanopticSceneGraphDataset'
 
@@ -190,8 +190,8 @@ evaluation = dict(
     detection_method='pan_seg',
 )
 
-data = dict(samples_per_gpu=1,
-            workers_per_gpu=2,
+data = dict(samples_per_gpu=2,
+            workers_per_gpu=1,
             train=dict(pipeline=train_pipeline),
             val=dict(pipeline=test_pipeline),
             test=dict(pipeline=test_pipeline))
