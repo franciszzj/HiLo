@@ -1,6 +1,6 @@
 data
 data_val
-work_dirs/
+work_dirs
 wandb/
 mmdet/
 submission/
