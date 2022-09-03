@@ -18,7 +18,7 @@ from mmdet.datasets.coco_panoptic import INSTANCE_OFFSET
 from mmdet.models.builder import HEADS, build_loss
 from mmdet.models.dense_heads import AnchorFreeHead
 from mmdet.models.utils import build_transformer
-#####imports for tools
+# imports for tools
 from packaging import version
 
 if version.parse(torchvision.__version__) < version.parse('0.7'):
@@ -102,7 +102,7 @@ class PSGTrHead(AnchorFreeHead):
             f'{type(s_class_weight)}.'
 
         s_class_weight = torch.ones(num_classes + 1) * s_class_weight
-        #NOTE set background class as the last indice
+        # NOTE set background class as the last indice
         s_class_weight[-1] = bg_cls_weight
         sub_loss_cls.update({'class_weight': s_class_weight})
 
@@ -112,7 +112,7 @@ class PSGTrHead(AnchorFreeHead):
             f'{type(o_class_weight)}.'
 
         o_class_weight = torch.ones(num_classes + 1) * o_class_weight
-        #NOTE set background class as the last indice
+        # NOTE set background class as the last indice
         o_class_weight[-1] = bg_cls_weight
         obj_loss_cls.update({'class_weight': o_class_weight})
 
@@ -122,7 +122,7 @@ class PSGTrHead(AnchorFreeHead):
             f'{type(r_class_weight)}.'
 
         r_class_weight = torch.ones(num_relations + 1) * r_class_weight
-        #NOTE set background class as the first indice for relations as they are 1-based
+        # NOTE set background class as the first indice for relations as they are 1-based
         r_class_weight[0] = bg_cls_weight
         rel_loss_cls.update({'class_weight': r_class_weight})
         if 'bg_cls_weight' in rel_loss_cls:
@@ -177,9 +177,9 @@ class PSGTrHead(AnchorFreeHead):
         self.sub_loss_bbox = build_loss(sub_loss_bbox)
         self.sub_loss_iou = build_loss(sub_loss_iou)
         if self.use_mask:
-            # self.obj_focal_loss = build_loss(obj_focal_loss)
+            self.obj_focal_loss = build_loss(obj_focal_loss)
             self.obj_dice_loss = build_loss(obj_dice_loss)
-            # self.sub_focal_loss = build_loss(sub_focal_loss)
+            self.sub_focal_loss = build_loss(sub_focal_loss)
             self.sub_dice_loss = build_loss(sub_dice_loss)
 
         self.rel_loss_cls = build_loss(rel_loss_cls)
@@ -283,7 +283,7 @@ class PSGTrHead(AnchorFreeHead):
         # NOTE following the official DETR repo, non-zero values representing
         # ignored positions, while zero values means valid positions.
         last_features = feats[
-            -1]  ####get feature outputs of intermediate layers
+            -1]  # get feature outputs of intermediate layers
         batch_size = last_features.size(0)
         input_img_h, input_img_w = img_metas[0]['batch_input_shape']
         masks = last_features.new_ones((batch_size, input_img_h, input_img_w))
@@ -385,13 +385,7 @@ class PSGTrHead(AnchorFreeHead):
         all_r_cls_scores = all_cls_scores['rel']
 
         if self.use_mask:
-            # s_losses_cls, o_losses_cls, r_losses_cls, s_losses_bbox, o_losses_bbox, s_losses_iou, o_losses_iou, s_focal_losses, s_dice_losses, o_focal_losses, o_dice_losses = multi_apply(
-            #     self.loss_single, all_s_cls_scores, all_o_cls_scores, all_r_cls_scores, all_s_bbox_preds, all_o_bbox_preds,
-            #     all_s_mask_preds, all_o_mask_preds,
-            #     all_gt_rels_list,all_gt_bboxes_list, all_gt_labels_list,
-            #     all_gt_masks_list, img_metas_list,
-            #     all_gt_bboxes_ignore_list)
-            s_losses_cls, o_losses_cls, r_losses_cls, s_losses_bbox, o_losses_bbox, s_losses_iou, o_losses_iou, s_dice_losses, o_dice_losses = multi_apply(
+            s_losses_cls, o_losses_cls, r_losses_cls, s_losses_bbox, o_losses_bbox, s_losses_iou, o_losses_iou, s_focal_losses, s_dice_losses, o_focal_losses, o_dice_losses = multi_apply(
                 self.loss_single, all_s_cls_scores, all_o_cls_scores,
                 all_r_cls_scores, all_s_bbox_preds, all_o_bbox_preds,
                 all_s_mask_preds, all_o_mask_preds, all_gt_rels_list,
@@ -400,7 +394,7 @@ class PSGTrHead(AnchorFreeHead):
         else:
             all_s_mask_preds = [None for _ in range(num_dec_layers)]
             all_o_mask_preds = [None for _ in range(num_dec_layers)]
-            s_losses_cls, o_losses_cls, r_losses_cls, s_losses_bbox, o_losses_bbox, s_losses_iou, o_losses_iou, s_dice_losses, o_dice_losses = multi_apply(
+            s_losses_cls, o_losses_cls, r_losses_cls, s_losses_bbox, o_losses_bbox, s_losses_iou, o_losses_iou, s_focal_losses, s_dice_losses, o_focal_losses, o_dice_losses = multi_apply(
                 self.loss_single, all_s_cls_scores, all_o_cls_scores,
                 all_r_cls_scores, all_s_bbox_preds, all_o_bbox_preds,
                 all_s_mask_preds, all_o_mask_preds, all_gt_rels_list,
@@ -417,8 +411,8 @@ class PSGTrHead(AnchorFreeHead):
         loss_dict['s_loss_iou'] = s_losses_iou[-1]
         loss_dict['o_loss_iou'] = o_losses_iou[-1]
         if self.use_mask:
-            # loss_dict['s_focal_losses'] = s_focal_losses[-1]
-            # loss_dict['o_focal_losses'] = o_focal_losses[-1]
+            loss_dict['s_focal_losses'] = s_focal_losses[-1]
+            loss_dict['o_focal_losses'] = o_focal_losses[-1]
             loss_dict['s_dice_losses'] = s_dice_losses[-1]
             loss_dict['o_dice_losses'] = o_dice_losses[-1]
 
@@ -427,8 +421,8 @@ class PSGTrHead(AnchorFreeHead):
         for s_loss_cls_i, o_loss_cls_i, r_loss_cls_i, \
             s_loss_bbox_i, o_loss_bbox_i, \
             s_loss_iou_i, o_loss_iou_i in zip(s_losses_cls[:-1], o_losses_cls[:-1], r_losses_cls[:-1],
-                                          s_losses_bbox[:-1], o_losses_bbox[:-1],
-                                          s_losses_iou[:-1], o_losses_iou[:-1]):
+                                              s_losses_bbox[:-1], o_losses_bbox[:-1],  # noqa
+                                              s_losses_iou[:-1], o_losses_iou[:-1]):
             loss_dict[f'd{num_dec_layer}.s_loss_cls'] = s_loss_cls_i
             loss_dict[f'd{num_dec_layer}.o_loss_cls'] = o_loss_cls_i
             loss_dict[f'd{num_dec_layer}.r_loss_cls'] = r_loss_cls_i
@@ -504,17 +498,21 @@ class PSGTrHead(AnchorFreeHead):
             num_matches = o_mask_preds.shape[0]
 
             # mask loss
-            # s_focal_loss = self.sub_focal_loss(s_mask_preds,s_mask_targets,num_matches)
+            s_focal_loss = self.sub_focal_loss(
+                s_mask_preds, s_mask_targets, num_matches)
             s_dice_loss = self.sub_dice_loss(
                 s_mask_preds, s_mask_targets,
                 num_matches)
 
-            # o_focal_loss = self.obj_focal_loss(o_mask_preds,o_mask_targets,num_matches)
+            o_focal_loss = self.obj_focal_loss(
+                o_mask_preds, o_mask_targets, num_matches)
             o_dice_loss = self.obj_dice_loss(
                 o_mask_preds, o_mask_targets,
-                num_matches) 
+                num_matches)
         else:
+            s_focal_loss = None
             s_dice_loss = None
+            o_focal_loss = None
             o_dice_loss = None
 
         # classification loss
@@ -530,7 +528,7 @@ class PSGTrHead(AnchorFreeHead):
                 s_cls_scores.new_tensor([cls_avg_factor]))
         cls_avg_factor = max(cls_avg_factor, 1)
 
-        ###NOTE change cls_avg_factor for objects as we do not calculate object classification loss for unmatched ones
+        # NOTE change cls_avg_factor for objects as we do not calculate object classification loss for unmatched ones
 
         s_loss_cls = self.sub_loss_cls(s_cls_scores,
                                        s_labels,
@@ -592,8 +590,7 @@ class PSGTrHead(AnchorFreeHead):
                                          o_bbox_targets,
                                          o_bbox_weights,
                                          avg_factor=num_total_pos)
-        # return s_loss_cls, o_loss_cls, r_loss_cls, s_loss_bbox, o_loss_bbox, s_loss_iou, o_loss_iou, s_focal_loss, s_dice_loss, o_focal_loss, o_dice_loss
-        return s_loss_cls, o_loss_cls, r_loss_cls, s_loss_bbox, o_loss_bbox, s_loss_iou, o_loss_iou, s_dice_loss, o_dice_loss
+        return s_loss_cls, o_loss_cls, r_loss_cls, s_loss_bbox, o_loss_bbox, s_loss_iou, o_loss_iou, s_focal_loss, s_dice_loss, o_focal_loss, o_dice_loss
 
     def get_targets(self,
                     s_cls_scores_list,
@@ -740,12 +737,12 @@ class PSGTrHead(AnchorFreeHead):
         o_sampling_result = self.sampler.sample(o_assign_result, o_bbox_pred,
                                                 gt_obj_bboxes)
         pos_inds = o_sampling_result.pos_inds
-        neg_inds = o_sampling_result.neg_inds  #### no-rel class indices in prediction
+        neg_inds = o_sampling_result.neg_inds  # no-rel class indices in prediction
 
         # label targets
         s_labels = gt_sub_bboxes.new_full(
             (num_bboxes, ), self.num_classes,
-            dtype=torch.long)  ### 0-based, class [num_classes]  as background
+            dtype=torch.long)  # 0-based, class [num_classes]  as background
         s_labels[pos_inds] = gt_sub_labels[
             s_sampling_result.pos_assigned_gt_inds]
         s_label_weights = gt_sub_bboxes.new_zeros(num_bboxes)
@@ -753,7 +750,7 @@ class PSGTrHead(AnchorFreeHead):
 
         o_labels = gt_obj_bboxes.new_full(
             (num_bboxes, ), self.num_classes,
-            dtype=torch.long)  ### 0-based, class [num_classes] as background
+            dtype=torch.long)  # 0-based, class [num_classes] as background
         o_labels[pos_inds] = gt_obj_labels[
             o_sampling_result.pos_assigned_gt_inds]
         o_label_weights = gt_obj_bboxes.new_zeros(num_bboxes)
@@ -761,7 +758,7 @@ class PSGTrHead(AnchorFreeHead):
 
         r_labels = gt_obj_bboxes.new_full(
             (num_bboxes, ), 0,
-            dtype=torch.long)  ### 1-based, class 0 as background
+            dtype=torch.long)  # 1-based, class 0 as background
         r_labels[pos_inds] = gt_rel_labels[
             o_sampling_result.pos_assigned_gt_inds]
         r_label_weights = gt_obj_bboxes.new_ones(num_bboxes)
@@ -775,14 +772,13 @@ class PSGTrHead(AnchorFreeHead):
             # mask targets for subjects and objects
             s_mask_targets = gt_sub_masks[
                 s_sampling_result.pos_assigned_gt_inds,
-                ...]  
+                ...]
             s_mask_preds = s_mask_preds[pos_inds]
-            
 
             o_mask_targets = gt_obj_masks[
                 o_sampling_result.pos_assigned_gt_inds, ...]
             o_mask_preds = o_mask_preds[pos_inds]
-            
+
             s_mask_preds = interpolate(s_mask_preds[:, None],
                                        size=gt_sub_masks.shape[-2:],
                                        mode='bilinear',
@@ -828,7 +824,7 @@ class PSGTrHead(AnchorFreeHead):
                 r_label_weights, s_bbox_targets, o_bbox_targets,
                 s_bbox_weights, o_bbox_weights, s_mask_targets, o_mask_targets,
                 pos_inds, neg_inds, s_mask_preds, o_mask_preds
-                )  ###return the interpolated predicted masks
+                )  # return the interpolated predicted masks
 
     # over-write because img_metas are needed as inputs for bbox_head.
     def forward_train(self,
@@ -949,7 +945,7 @@ class PSGTrHead(AnchorFreeHead):
 
         r_dists = r_lgs.reshape(
             -1, self.num_relations +
-            1)[triplet_index]  #### NOTE: to match the evaluation in vg
+            1)[triplet_index]  # NOTE: to match the evaluation in vg
 
         if self.use_mask:
             s_mask_pred = s_mask_pred[triplet_index]
@@ -961,13 +957,14 @@ class PSGTrHead(AnchorFreeHead):
 
             s_mask_pred_logits = s_mask_pred
             o_mask_pred_logits = o_mask_pred
-            
+
             s_mask_pred = torch.sigmoid(s_mask_pred) > 0.85
             o_mask_pred = torch.sigmoid(o_mask_pred) > 0.85
             ### triplets deduplicate####
             relation_classes = defaultdict(lambda: [])
-            for k, (s_l,o_l,r_l) in enumerate(zip(s_labels,o_labels,r_labels)):
-                relation_classes[(s_l.item(),o_l.item(),r_l.item())].append(k)
+            for k, (s_l, o_l, r_l) in enumerate(zip(s_labels, o_labels, r_labels)):
+                relation_classes[(s_l.item(), o_l.item(),
+                                  r_l.item())].append(k)
             s_binary_masks = s_mask_pred.to(torch.float).flatten(1)
             o_binary_masks = o_mask_pred.to(torch.float).flatten(1)
 
@@ -978,23 +975,26 @@ class PSGTrHead(AnchorFreeHead):
                     other_s_masks = s_binary_masks[triplets_ids[1:]]
                     other_o_masks = o_binary_masks[triplets_ids[1:]]
                     # calculate ious
-                    s_ious = base_s_mask.mm(other_s_masks.transpose(0,1))/((base_s_mask+other_s_masks)>0).sum(-1)
-                    o_ious = base_o_mask.mm(other_o_masks.transpose(0,1))/((base_o_mask+other_o_masks)>0).sum(-1)
+                    s_ious = base_s_mask.mm(other_s_masks.transpose(
+                        0, 1))/((base_s_mask+other_s_masks) > 0).sum(-1)
+                    o_ious = base_o_mask.mm(other_o_masks.transpose(
+                        0, 1))/((base_o_mask+other_o_masks) > 0).sum(-1)
                     ids_left = []
-                    for s_iou, o_iou, other_id in zip(s_ious[0],o_ious[0],triplets_ids[1:]):
-                        if (s_iou>0.5) & (o_iou>0.5):
+                    for s_iou, o_iou, other_id in zip(s_ious[0], o_ious[0], triplets_ids[1:]):
+                        if (s_iou > 0.5) & (o_iou > 0.5):
                             keep_tri[other_id] = False
                         else:
                             ids_left.append(other_id)
                     triplets_ids = ids_left
                 return keep_tri
-            
-            keep_tri = torch.ones_like(r_labels,dtype=torch.bool)
-            for triplets_ids in relation_classes.values():
-                if len(triplets_ids)>1:
-                    keep_tri = dedup_triplets(triplets_ids, s_binary_masks, o_binary_masks, keep_tri)
 
-            s_labels = s_labels[keep_tri] 
+            keep_tri = torch.ones_like(r_labels, dtype=torch.bool)
+            for triplets_ids in relation_classes.values():
+                if len(triplets_ids) > 1:
+                    keep_tri = dedup_triplets(
+                        triplets_ids, s_binary_masks, o_binary_masks, keep_tri)
+
+            s_labels = s_labels[keep_tri]
             o_labels = o_labels[keep_tri]
             s_mask_pred = s_mask_pred[keep_tri]
             o_mask_pred = o_mask_pred[keep_tri]
@@ -1005,10 +1005,10 @@ class PSGTrHead(AnchorFreeHead):
             r_labels = r_labels[keep_tri]
             r_dists = r_dists[keep_tri]
             rel_pairs = torch.arange(keep_tri.sum()*2,
-                            dtype=torch.int).reshape(2, -1).T
+                                     dtype=torch.int).reshape(2, -1).T
             complete_r_labels = r_labels
             complete_r_dists = r_dists
-            
+
             s_binary_masks = s_binary_masks[keep_tri]
             o_binary_masks = o_binary_masks[keep_tri]
 
@@ -1016,11 +1016,11 @@ class PSGTrHead(AnchorFreeHead):
             o_mask_pred_logits = o_mask_pred_logits[keep_tri]
 
             ###end triplets deduplicate####
-            
+
             #### for panoptic postprocessing ####
             keep = (s_labels != (s_logits.shape[-1] - 1)) & (
-                    o_labels != (s_logits.shape[-1] - 1)) & (
-                    s_scores[keep_tri]>0.5) & (o_scores[keep_tri] > 0.5) & (r_scores > 0.3) ## the threshold is set to 0.85
+                o_labels != (s_logits.shape[-1] - 1)) & (
+                    s_scores[keep_tri] > 0.5) & (o_scores[keep_tri] > 0.5) & (r_scores > 0.3)  # the threshold is set to 0.85
             r_scores = r_scores[keep]
             r_labels = r_labels[keep]
             r_dists = r_dists[keep]
@@ -1030,15 +1030,17 @@ class PSGTrHead(AnchorFreeHead):
             binary_masks = masks.to(torch.float).flatten(1)
             s_mask_pred_logits = s_mask_pred_logits[keep]
             o_mask_pred_logits = o_mask_pred_logits[keep]
-            mask_logits = torch.cat((s_mask_pred_logits, o_mask_pred_logits), 0)
+            mask_logits = torch.cat(
+                (s_mask_pred_logits, o_mask_pred_logits), 0)
 
             h, w = masks.shape[-2:]
 
             if labels.numel() == 0:
                 pan_img = torch.ones(mask_size).cpu().to(torch.long)
                 pan_masks = pan_img.unsqueeze(0).cpu().to(torch.long)
-                pan_rel_pairs = torch.arange(len(labels), dtype=torch.int).to(masks.device).reshape(2, -1).T
-                rels = torch.tensor([0,0,0]).view(-1,3)
+                pan_rel_pairs = torch.arange(len(labels), dtype=torch.int).to(
+                    masks.device).reshape(2, -1).T
+                rels = torch.tensor([0, 0, 0]).view(-1, 3)
                 pan_labels = torch.tensor([0])
             else:
                 stuff_equiv_classes = defaultdict(lambda: [])
@@ -1050,18 +1052,20 @@ class PSGTrHead(AnchorFreeHead):
                     else:
                         thing_classes[label.item()].append(k)
 
-                pan_rel_pairs = torch.arange(len(labels), dtype=torch.int).to(masks.device)
+                pan_rel_pairs = torch.arange(
+                    len(labels), dtype=torch.int).to(masks.device)
 
                 def dedup_things(pred_ids, binary_masks):
                     while len(pred_ids) > 1:
                         base_mask = binary_masks[pred_ids[0]].unsqueeze(0)
                         other_masks = binary_masks[pred_ids[1:]]
                         # calculate ious
-                        ious = base_mask.mm(other_masks.transpose(0,1))/((base_mask+other_masks)>0).sum(-1)
+                        ious = base_mask.mm(other_masks.transpose(
+                            0, 1))/((base_mask+other_masks) > 0).sum(-1)
                         ids_left = []
                         thing_dedup[pred_ids[0]].append(pred_ids[0])
-                        for iou, other_id in zip(ious[0],pred_ids[1:]):
-                            if iou>0.5:
+                        for iou, other_id in zip(ious[0], pred_ids[1:]):
+                            if iou > 0.5:
                                 thing_dedup[pred_ids[0]].append(other_id)
                             else:
                                 ids_left.append(other_id)
@@ -1072,9 +1076,10 @@ class PSGTrHead(AnchorFreeHead):
                 # create dict that groups duplicate masks
                 for thing_pred_ids in thing_classes.values():
                     if len(thing_pred_ids) > 1:
-                      dedup_things(thing_pred_ids, binary_masks)
+                        dedup_things(thing_pred_ids, binary_masks)
                     else:
-                        thing_dedup[thing_pred_ids[0]].append(thing_pred_ids[0])
+                        thing_dedup[thing_pred_ids[0]].append(
+                            thing_pred_ids[0])
 
                 def get_ids_area(masks, pan_rel_pairs, r_labels, r_dists, dedup=False):
                     # This helper function creates the final panoptic segmentation image
@@ -1103,23 +1108,25 @@ class PSGTrHead(AnchorFreeHead):
                                 for eq_id in equiv:
                                     m_id.masked_fill_(m_id.eq(eq_id), equiv[0])
                                     pan_rel_pairs[eq_id] = equiv[0]
-                    
-                    m_ids_remain,_ = m_id.unique().sort()
+
+                    m_ids_remain, _ = m_id.unique().sort()
 
                     pan_rel_pairs = pan_rel_pairs.reshape(2, -1).T
-                    no_obj_filter = torch.zeros(pan_rel_pairs.shape[0],dtype=torch.bool)
+                    no_obj_filter = torch.zeros(
+                        pan_rel_pairs.shape[0], dtype=torch.bool)
                     for triplet_id in range(pan_rel_pairs.shape[0]):
-                        if pan_rel_pairs[triplet_id,0] in m_ids_remain and pan_rel_pairs[triplet_id,1] in m_ids_remain:
-                            no_obj_filter[triplet_id]=True
+                        if pan_rel_pairs[triplet_id, 0] in m_ids_remain and pan_rel_pairs[triplet_id, 1] in m_ids_remain:
+                            no_obj_filter[triplet_id] = True
                     pan_rel_pairs = pan_rel_pairs[no_obj_filter]
                     r_labels, r_dists = r_labels[no_obj_filter], r_dists[no_obj_filter]
-                    pan_labels = [] 
+                    pan_labels = []
                     pan_masks = []
                     for i, m_id_remain in enumerate(m_ids_remain):
                         pan_masks.append(m_id.eq(m_id_remain).unsqueeze(0))
                         pan_labels.append(labels[m_id_remain].unsqueeze(0))
                         m_id.masked_fill_(m_id.eq(m_id_remain), i)
-                        pan_rel_pairs.masked_fill_(pan_rel_pairs.eq(m_id_remain), i)
+                        pan_rel_pairs.masked_fill_(
+                            pan_rel_pairs.eq(m_id_remain), i)
                     pan_masks = torch.cat(pan_masks, 0)
                     pan_labels = torch.cat(pan_labels, 0)
                     seg_img = m_id * INSTANCE_OFFSET + pan_labels[m_id]
@@ -1130,11 +1137,13 @@ class PSGTrHead(AnchorFreeHead):
                         area.append(m_id.eq(i).sum().item())
                     return area, seg_img, pan_rel_pairs, pan_masks, r_labels, r_dists, pan_labels
 
-                area, pan_img, pan_rel_pairs, pan_masks, r_labels, r_dists, pan_labels = get_ids_area(mask_logits, pan_rel_pairs, r_labels, r_dists, dedup=True)
+                area, pan_img, pan_rel_pairs, pan_masks, r_labels, r_dists, pan_labels = get_ids_area(
+                    mask_logits, pan_rel_pairs, r_labels, r_dists, dedup=True)
                 if r_labels.numel() == 0:
-                    rels = torch.tensor([0,0,0]).view(-1,3)
+                    rels = torch.tensor([0, 0, 0]).view(-1, 3)
                 else:
-                    rels = torch.cat((pan_rel_pairs,r_labels.unsqueeze(-1)),-1)
+                    rels = torch.cat(
+                        (pan_rel_pairs, r_labels.unsqueeze(-1)), -1)
                 # if labels.numel() > 0:
                 #     # We know filter empty masks as long as we find some
                 #     while True:
@@ -1168,7 +1177,8 @@ class PSGTrHead(AnchorFreeHead):
             o_det_bboxes /= o_det_bboxes.new_tensor(scale_factor)
         o_det_bboxes = torch.cat((o_det_bboxes, o_scores.unsqueeze(1)), -1)
 
-        det_bboxes = torch.cat((s_det_bboxes[keep_tri], o_det_bboxes[keep_tri]), 0)
+        det_bboxes = torch.cat(
+            (s_det_bboxes[keep_tri], o_det_bboxes[keep_tri]), 0)
 
         if self.use_mask:
             return det_bboxes, complete_labels, rel_pairs, output_masks, pan_rel_pairs, \
@@ -1177,7 +1187,7 @@ class PSGTrHead(AnchorFreeHead):
             return det_bboxes, labels, rel_pairs, r_labels, r_dists
 
     def simple_test_bboxes(self, feats, img_metas, rescale=False):
-        
+
         # forward of this head requires img_metas
         # start = time.time()
         outs = self.forward(feats, img_metas)
@@ -1193,6 +1203,7 @@ class PSGTrHead(AnchorFreeHead):
 class MLP(nn.Module):
     """Very simple multi-layer perceptron (also called FFN) Copied from
     hoitr."""
+
     def __init__(self, input_dim, hidden_dim, output_dim, num_layers):
         super().__init__()
         self.num_layers = num_layers
@@ -1215,6 +1226,7 @@ class MaskHeadSmallConv(nn.Module):
 
     Upsampling is done using a FPN approach
     """
+
     def __init__(self, dim, fpn_dims, context_dim):
         super().__init__()
 
@@ -1288,6 +1300,7 @@ class MaskHeadSmallConv(nn.Module):
 class MHAttentionMap(nn.Module):
     """This is a 2D attention module, which only returns the attention softmax
     (no multiplication by value)"""
+
     def __init__(self,
                  query_dim,
                  hidden_dim,
