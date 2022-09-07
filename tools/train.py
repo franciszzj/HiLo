@@ -14,7 +14,7 @@ from mmcv.utils import get_git_hash
 from mmdet import __version__
 from mmdet.apis import init_random_seed, set_random_seed, train_detector
 from mmdet.models import build_detector
-from mmdet.utils import collect_env, get_root_logger
+from mmdet.utils import collect_env, get_root_logger, get_device
 
 from openpsg.datasets import build_dataset
 
@@ -150,6 +150,7 @@ def main():
     logger.info(f'Distributed training: {distributed}')
     logger.info(f'Config:\n{cfg.pretty_text}')
 
+    cfg.device = get_device()
     # set random seeds
     seed = init_random_seed(args.seed)
     logger.info(f'Set random seed to {seed}, '
