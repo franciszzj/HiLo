@@ -153,6 +153,15 @@ class PSGTrHead(AnchorFreeHead):
             assert obj_loss_iou['loss_weight'] == assigner['o_iou_cost']['weight'], \
                 'The regression iou weight for loss and matcher should be' \
                 'exactly the same.'
+            if train_cfg.assigner.type == 'MaskHTriMatcher':
+                assert sub_focal_loss['loss_weight'] == assigner['s_focal_cost']['weight'], \
+                    'The mask focal loss weight for loss and matcher should be exactly the same.'
+                assert sub_dice_loss['loss_weight'] == assigner['s_dice_cost']['weight'], \
+                    'The mask dice loss weight for loss and matcher should be exactly the same.'
+                assert obj_focal_loss['loss_weight'] == assigner['o_focal_cost']['weight'], \
+                    'The mask focal loss weight for loss and matcher should be exactly the same.'
+                assert obj_dice_loss['loss_weight'] == assigner['o_dice_cost']['weight'], \
+                    'The mask dice loss weight for loss and matcher should be exactly the same.'
             self.assigner = build_assigner(assigner)
             # following DETR sampling=False, so use PseudoSampler
             sampler_cfg = dict(type='PseudoSampler')
@@ -715,22 +724,48 @@ class PSGTrHead(AnchorFreeHead):
                 gt_obj_masks.append(gt_masks[int(gt_rels[rel_id,
                                                          1])].unsqueeze(0))
 
-        gt_sub_bboxes = torch.vstack(gt_sub_bboxes).type_as(gt_bboxes).reshape(
-            -1, 4)
-        gt_obj_bboxes = torch.vstack(gt_obj_bboxes).type_as(gt_bboxes).reshape(
-            -1, 4)
-        gt_sub_labels = torch.vstack(gt_sub_labels).type_as(gt_labels).reshape(
-            -1)
-        gt_obj_labels = torch.vstack(gt_obj_labels).type_as(gt_labels).reshape(
-            -1)
-        gt_rel_labels = torch.vstack(gt_rel_labels).type_as(gt_labels).reshape(
-            -1)
+        gt_sub_bboxes = torch.vstack(
+            gt_sub_bboxes).type_as(gt_bboxes).reshape(-1, 4)
+        gt_obj_bboxes = torch.vstack(
+            gt_obj_bboxes).type_as(gt_bboxes).reshape(-1, 4)
+        gt_sub_labels = torch.vstack(
+            gt_sub_labels).type_as(gt_labels).reshape(-1)
+        gt_obj_labels = torch.vstack(
+            gt_obj_labels).type_as(gt_labels).reshape(-1)
+        gt_rel_labels = torch.vstack(
+            gt_rel_labels).type_as(gt_labels).reshape(-1)
+        if self.use_mask:
+            gt_sub_masks = torch.vstack(
+                gt_sub_masks).type_as(gt_masks)
+            gt_obj_masks = torch.vstack(
+                gt_obj_masks).type_as(gt_masks)
+            s_mask_preds = interpolate(s_mask_preds[:, None],
+                                       size=gt_sub_masks.shape[-2:],
+                                       mode='bilinear',
+                                       align_corners=False).squeeze(1)
+            o_mask_preds = interpolate(o_mask_preds[:, None],
+                                       size=gt_obj_masks.shape[-2:],
+                                       mode='bilinear',
+                                       align_corners=False).squeeze(1)
 
         # assigner and sampler, only return subject&object assign result
-        s_assign_result, o_assign_result = self.assigner.assign(
-            s_bbox_pred, o_bbox_pred, s_cls_score, o_cls_score, r_cls_score,
-            gt_sub_bboxes, gt_obj_bboxes, gt_sub_labels, gt_obj_labels,
-            gt_rel_labels, img_meta, gt_bboxes_ignore)
+        if self.train_cfg.assigner.type == 'HTriMatcher':
+            s_assign_result, o_assign_result = self.assigner.assign(
+                s_bbox_pred, o_bbox_pred, s_cls_score, o_cls_score, r_cls_score,
+                gt_sub_bboxes, gt_obj_bboxes, gt_sub_labels, gt_obj_labels,
+                gt_rel_labels, img_meta, gt_bboxes_ignore)
+        elif self.train_cfg.assigner.type == 'MaskHTriMatcher':
+            s_assign_result, o_assign_result = self.assigner.assign(
+                s_cls_score, o_cls_score, r_cls_score,
+                s_bbox_pred, o_bbox_pred,
+                s_mask_preds, o_mask_preds,
+                gt_sub_labels, gt_obj_labels, gt_rel_labels,
+                gt_sub_bboxes, gt_obj_bboxes,
+                gt_sub_masks, gt_obj_masks,
+                img_meta, gt_bboxes_ignore)
+        else:
+            assert False, 'Not support model.train_cfg.assigner.type: {}'.format(
+                self.train_cfg.assigner.type)
 
         s_sampling_result = self.sampler.sample(s_assign_result, s_bbox_pred,
                                                 gt_sub_bboxes)
@@ -765,8 +800,8 @@ class PSGTrHead(AnchorFreeHead):
 
         if self.use_mask:
 
-            gt_sub_masks = torch.cat(gt_sub_masks, axis=0).type_as(gt_masks[0])
-            gt_obj_masks = torch.cat(gt_obj_masks, axis=0).type_as(gt_masks[0])
+            # gt_sub_masks = torch.cat(gt_sub_masks, axis=0).type_as(gt_masks[0])
+            # gt_obj_masks = torch.cat(gt_obj_masks, axis=0).type_as(gt_masks[0])
 
             assert gt_sub_masks.size() == gt_obj_masks.size()
             # mask targets for subjects and objects
@@ -779,15 +814,15 @@ class PSGTrHead(AnchorFreeHead):
                 o_sampling_result.pos_assigned_gt_inds, ...]
             o_mask_preds = o_mask_preds[pos_inds]
 
-            s_mask_preds = interpolate(s_mask_preds[:, None],
-                                       size=gt_sub_masks.shape[-2:],
-                                       mode='bilinear',
-                                       align_corners=False).squeeze(1)
+            # s_mask_preds = interpolate(s_mask_preds[:, None],
+            #                            size=gt_sub_masks.shape[-2:],
+            #                            mode='bilinear',
+            #                            align_corners=False).squeeze(1)
 
-            o_mask_preds = interpolate(o_mask_preds[:, None],
-                                       size=gt_obj_masks.shape[-2:],
-                                       mode='bilinear',
-                                       align_corners=False).squeeze(1)
+            # o_mask_preds = interpolate(o_mask_preds[:, None],
+            #                            size=gt_obj_masks.shape[-2:],
+            #                            mode='bilinear',
+            #                            align_corners=False).squeeze(1)
         else:
             s_mask_targets = None
             s_mask_preds = None
