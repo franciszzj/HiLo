@@ -6,7 +6,7 @@
 #SBATCH --ntasks-per-node=1
 #SBATCH --time=2-00:00
 
-source /users/${USER}/.bashrc
+source ~/.bashrc
 module load cuda
 nvidia-smi -i $CUDA_VISIBLE_DEVICES
 nvcc --version
