@@ -615,21 +615,21 @@ class PSGMaskFormerHead(AnchorFreeHead):
 
         Args:
             s_cls_score (Tensor): Subject box score logits from a single decoder layer
-                for one image. Shape [num_query, cls_out_channels].
+                for one image. Shape [num_queries, cls_out_channels].
             o_cls_score (Tensor): Object box score logits from a single decoder layer
-                for one image. Shape [num_query, cls_out_channels].
+                for one image. Shape [num_queries, cls_out_channels].
             r_cls_score (Tensor): Relation score logits from a single decoder layer
-                for one image. Shape [num_query, cls_out_channels].
+                for one image. Shape [num_queries, cls_out_channels].
             s_bbox_pred (Tensor): Sigmoid outputs of Subject bboxes from a single decoder layer
                 for one image, with normalized coordinate (cx, cy, w, h) and
-                shape [num_query, 4].
+                shape [num_queries, 4].
             o_bbox_pred (Tensor): Sigmoid outputs of object bboxes from a single decoder layer
                 for one image, with normalized coordinate (cx, cy, w, h) and
-                shape [num_query, 4].
+                shape [num_queries, 4].
             s_mask_preds (Tensor): Logits before sigmoid subject masks from a single decoder layer
-                for one image, with shape [num_query, H, W].
+                for one image, with shape [num_queries, H, W].
             o_mask_preds (Tensor): Logits before sigmoid object masks from a single decoder layer
-                for one image, with shape [num_query, H, W].
+                for one image, with shape [num_queries, H, W].
             gt_rels (Tensor): Ground truth relation triplets for one image with
                 shape (num_gts, 3) in [gt_sub_id, gt_obj_id, gt_rel_class] format.
             gt_bboxes (Tensor): Ground truth bboxes for one image with
@@ -996,7 +996,7 @@ class PSGMaskFormerHead(AnchorFreeHead):
 
         mask_size = (round(img_shape[0] / scale_factor[1]),
                      round(img_shape[1] / scale_factor[0]))
-        max_per_img = self.test_cfg.get('max_per_img', self.num_query)
+        max_per_img = self.test_cfg.get('max_per_img', self.num_queries)
 
         assert self.sub_loss_cls.use_sigmoid == False
         assert self.obj_loss_cls.use_sigmoid == False
