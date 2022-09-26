@@ -189,6 +189,15 @@ class PSGMaskFormerHead(AnchorFreeHead):
             assert obj_loss_iou['loss_weight'] == assigner['o_iou_cost']['weight'], \
                 'The regression iou weight for loss and matcher should be' \
                 'exactly the same.'
+            if train_cfg.assigner.type == 'HTriMatcher':
+                if 's_focal_cost' in assigner.keys():
+                    del assigner['s_focal_cost']
+                if 's_dice_cost' in assigner.keys():
+                    del assigner['s_dice_cost']
+                if 'o_focal_cost' in assigner.keys():
+                    del assigner['o_focal_cost']
+                if 'o_dice_cost' in assigner.keys():
+                    del assigner['o_dice_cost']
             if train_cfg.assigner.type == 'MaskHTriMatcher':
                 assert sub_loss_focal['loss_weight'] == assigner['s_focal_cost']['weight'], \
                     'The mask focal loss weight for loss and matcher should be exactly the same.'
@@ -674,9 +683,11 @@ class PSGMaskFormerHead(AnchorFreeHead):
         # assigner and sampler, only return subject&object assign result
         if self.train_cfg.assigner.type == 'HTriMatcher':
             s_assign_result, o_assign_result = self.assigner.assign(
-                s_bbox_pred, o_bbox_pred, s_cls_score, o_cls_score, r_cls_score,
-                gt_sub_bboxes, gt_obj_bboxes, gt_sub_labels, gt_obj_labels,
-                gt_rel_labels, img_meta, gt_bboxes_ignore)
+                s_bbox_pred, o_bbox_pred,
+                s_cls_score, o_cls_score, r_cls_score,
+                gt_sub_bboxes, gt_obj_bboxes,
+                gt_sub_labels, gt_obj_labels, gt_rel_labels,
+                img_meta, gt_bboxes_ignore)
         elif self.train_cfg.assigner.type == 'MaskHTriMatcher':
             s_assign_result, o_assign_result = self.assigner.assign(
                 s_cls_score, o_cls_score, r_cls_score,
