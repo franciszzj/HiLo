@@ -11,6 +11,7 @@ from mmcv.runner import force_fp32
 
 from mmdet.core import (build_assigner, build_sampler, multi_apply, reduce_mean,
                         bbox_cxcywh_to_xyxy, bbox_xyxy_to_cxcywh)
+from mmdet.datasets.coco_panoptic import INSTANCE_OFFSET
 from mmdet.models.utils import preprocess_panoptic_gt
 from mmdet.models.builder import HEADS, build_loss
 from mmdet.models.dense_heads import AnchorFreeHead
