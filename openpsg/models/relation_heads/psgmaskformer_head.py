@@ -251,7 +251,6 @@ class PSGMaskFormerHead(AnchorFreeHead):
         convert_dict = {
             'panoptic_head.': 'bbox_head.'
         }
-        import pdb; pdb.set_trace()
         state_dict_keys = list(state_dict.keys())
         for k in state_dict_keys:
             for ori_key, convert_key in convert_dict.items():
