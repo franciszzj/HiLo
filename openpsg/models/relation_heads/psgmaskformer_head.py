@@ -3,6 +3,7 @@ from collections import defaultdict
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+import torchvision
 from mmcv.cnn import Conv2d, Linear, build_plugin_layer, caffe2_xavier_init
 from mmcv.cnn.bricks.transformer import (build_positional_encoding,
                                          build_transformer_layer_sequence)
@@ -12,7 +13,7 @@ from mmdet.core import (build_assigner, build_sampler, multi_apply, reduce_mean,
                         bbox_cxcywh_to_xyxy, bbox_xyxy_to_cxcywh)
 from mmdet.models.utils import preprocess_panoptic_gt
 from mmdet.models.builder import HEADS, build_loss
-from mmdet.models.dense_heads.anchor_free_head import AnchorFreeHead
+from mmdet.models.dense_heads import AnchorFreeHead
 
 from openpsg.models.relation_heads.psgtr_head import MLP
 
@@ -166,7 +167,6 @@ class PSGMaskFormerHead(AnchorFreeHead):
             assert 'assigner' in train_cfg, 'assigner should be provided '\
                 'when train_cfg is set.'
             assigner = train_cfg['assigner']
-            # 保证模型最终学习的方向，和设置label的形式是一致的。
             assert sub_loss_cls['loss_weight'] == assigner['s_cls_cost']['weight'], \
                 'The classification weight for loss and matcher should be' \
                 'exactly the same.'
@@ -294,10 +294,6 @@ class PSGMaskFormerHead(AnchorFreeHead):
             dict[str, Tensor]: A dictionary of loss components.
         """
 
-        # -----------------------------------------
-        # 构建用于计算的数据
-        # -----------------------------------------
-
         assert gt_bboxes_ignore is None, \
             'Only supports for gt_bboxes_ignore setting to None.'
 
@@ -309,7 +305,7 @@ class PSGMaskFormerHead(AnchorFreeHead):
         all_s_mask_preds = all_mask_preds['sub']
         all_o_mask_preds = all_mask_preds['obj']
 
-        num_dec_layers = len(all_cls_scores)
+        num_dec_layers = len(all_s_cls_scores)
 
         all_gt_labels_list = [gt_labels_list for _ in range(num_dec_layers)]
         all_gt_bboxes_list = [gt_bboxes_list for _ in range(num_dec_layers)]
@@ -319,14 +315,6 @@ class PSGMaskFormerHead(AnchorFreeHead):
         all_gt_rels_list = [gt_rels_list for _ in range(num_dec_layers)]
         img_metas_list = [img_metas for _ in range(num_dec_layers)]
 
-        # -----------------------------------------
-        # 计算loss
-        # -----------------------------------------
-
-        # losses_cls, losses_mask, losses_dice = multi_apply(
-        #     self.loss_single, all_cls_scores, all_mask_preds,
-        #     all_gt_labels_list, all_gt_masks_list, img_metas_list)
-
         s_losses_cls, o_losses_cls, r_losses_cls, \
             s_losses_bbox, o_losses_bbox, s_losses_iou, o_losses_iou, \
             s_losses_focal, o_losses_focal, s_losses_dice, o_losses_dice = multi_apply(
@@ -335,25 +323,6 @@ class PSGMaskFormerHead(AnchorFreeHead):
                 all_s_mask_preds, all_o_mask_preds, all_gt_rels_list,
                 all_gt_bboxes_list, all_gt_labels_list, all_gt_masks_list,
                 img_metas_list, all_gt_bboxes_ignore_list)
-
-        # -----------------------------------------
-        # 将Loss以dict的形式返回
-        # -----------------------------------------
-
-        # loss_dict = dict()
-        # # loss from the last decoder layer
-        # loss_dict['loss_cls'] = losses_cls[-1]
-        # loss_dict['loss_mask'] = losses_mask[-1]
-        # loss_dict['loss_dice'] = losses_dice[-1]
-        # # loss from other decoder layers
-        # num_dec_layer = 0
-        # for loss_cls_i, loss_mask_i, loss_dice_i in zip(
-        #         losses_cls[:-1], losses_mask[:-1], losses_dice[:-1]):
-        #     loss_dict[f'd{num_dec_layer}.loss_cls'] = loss_cls_i
-        #     loss_dict[f'd{num_dec_layer}.loss_mask'] = loss_mask_i
-        #     loss_dict[f'd{num_dec_layer}.loss_dice'] = loss_dice_i
-        #     num_dec_layer += 1
-        # return loss_dict
 
         loss_dict = dict()
         # loss from the last decoder layer
@@ -884,8 +853,8 @@ class PSGMaskFormerHead(AnchorFreeHead):
                               obj=obj_outputs_class,
                               rel=rel_outputs_class)
 
-        sub_outputs_coord = self.sub_box_embed(out_dec)
-        obj_outputs_coord = self.obj_box_embed(out_dec)
+        sub_outputs_coord = self.sub_box_embed(out_dec).sigmoid()
+        obj_outputs_coord = self.obj_box_embed(out_dec).sigmoid()
         all_bbox_preds = dict(sub=sub_outputs_coord,
                               obj=obj_outputs_coord)
 
@@ -897,13 +866,6 @@ class PSGMaskFormerHead(AnchorFreeHead):
             'lbqc,bchw->lbqhw', obj_mask_embed, mask_features)
         all_mask_preds = dict(sub=sub_outputs_mask,
                               obj=obj_outputs_mask)
-
-        # cls_scores
-        # all_cls_scores = self.cls_embed(out_dec)
-        # mask_preds
-        # mask_embed = self.mask_embed(out_dec)
-        # all_mask_preds = torch.einsum('lbqc,bchw->lbqhw', mask_embed,
-        #                               mask_features)
 
         return all_cls_scores, all_bbox_preds, all_mask_preds
 

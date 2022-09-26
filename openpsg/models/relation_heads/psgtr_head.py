@@ -11,9 +11,8 @@ from mmcv.cnn import Conv2d, Linear, build_activation_layer
 from mmcv.cnn.bricks.transformer import FFN, build_positional_encoding
 from mmcv.ops import batched_nms
 from mmcv.runner import force_fp32
-from mmdet.core import (bbox_cxcywh_to_xyxy, bbox_xyxy_to_cxcywh,
-                        build_assigner, build_sampler, multi_apply,
-                        reduce_mean)
+from mmdet.core import (build_assigner, build_sampler, multi_apply, reduce_mean,
+                        bbox_cxcywh_to_xyxy, bbox_xyxy_to_cxcywh)
 from mmdet.datasets.coco_panoptic import INSTANCE_OFFSET
 from mmdet.models.builder import HEADS, build_loss
 from mmdet.models.dense_heads import AnchorFreeHead
@@ -56,7 +55,7 @@ class PSGTrHead(AnchorFreeHead):
             sub_loss_bbox=dict(type='L1Loss', loss_weight=5.0),
             sub_loss_iou=dict(type='GIoULoss', loss_weight=2.0),
             sub_focal_loss=dict(type='BCEFocalLoss', loss_weight=1.0),
-            sub_dice_loss=dict(type='DiceLoss', loss_weight=1.0),
+            sub_dice_loss=dict(type='psgtrDiceLoss', loss_weight=1.0),
             obj_loss_cls=dict(type='CrossEntropyLoss',
                               use_sigmoid=False,
                               loss_weight=1.0,
@@ -64,7 +63,7 @@ class PSGTrHead(AnchorFreeHead):
             obj_loss_bbox=dict(type='L1Loss', loss_weight=5.0),
             obj_loss_iou=dict(type='GIoULoss', loss_weight=2.0),
             obj_focal_loss=dict(type='BCEFocalLoss', loss_weight=1.0),
-            obj_dice_loss=dict(type='DiceLoss', loss_weight=1.0),
+            obj_dice_loss=dict(type='psgtrDiceLoss', loss_weight=1.0),
             rel_loss_cls=dict(type='CrossEntropyLoss',
                               use_sigmoid=False,
                               loss_weight=2.0,
@@ -286,67 +285,6 @@ class PSGTrHead(AnchorFreeHead):
               self)._load_from_state_dict(state_dict, prefix, local_metadata,
                                           strict, missing_keys,
                                           unexpected_keys, error_msgs)
-
-    def forward(self, feats, img_metas):
-        # construct binary masks which used for the transformer.
-        # NOTE following the official DETR repo, non-zero values representing
-        # ignored positions, while zero values means valid positions.
-        last_features = feats[
-            -1]  # get feature outputs of intermediate layers
-        batch_size = last_features.size(0)
-        input_img_h, input_img_w = img_metas[0]['batch_input_shape']
-        masks = last_features.new_ones((batch_size, input_img_h, input_img_w))
-        for img_id in range(batch_size):
-            img_h, img_w, _ = img_metas[img_id]['img_shape']
-            masks[img_id, :img_h, :img_w] = 0
-
-        last_features = self.input_proj(last_features)
-        # interpolate masks to have the same spatial shape with feats
-        masks = F.interpolate(masks.unsqueeze(1),
-                              size=last_features.shape[-2:]).to(
-                                  torch.bool).squeeze(1)
-        # position encoding
-        pos_embed = self.positional_encoding(masks)  # [bs, embed_dim, h, w]
-        # outs_dec: [nb_dec, bs, num_query, embed_dim]
-        outs_dec, memory = self.transformer(last_features, masks,
-                                            self.query_embed.weight, pos_embed)
-
-        sub_outputs_class = self.sub_cls_embed(outs_dec)
-        sub_outputs_coord = self.sub_box_embed(outs_dec).sigmoid()
-        obj_outputs_class = self.obj_cls_embed(outs_dec)
-        obj_outputs_coord = self.obj_box_embed(outs_dec).sigmoid()
-
-        all_cls_scores = dict(sub=sub_outputs_class, obj=obj_outputs_class)
-        rel_outputs_class = self.rel_cls_embed(outs_dec)
-        all_cls_scores['rel'] = rel_outputs_class
-        if self.use_mask:
-            ###########for segmentation#################
-            sub_bbox_mask = self.sub_bbox_attention(outs_dec[-1],
-                                                    memory,
-                                                    mask=masks)
-            obj_bbox_mask = self.obj_bbox_attention(outs_dec[-1],
-                                                    memory,
-                                                    mask=masks)
-            sub_seg_masks = self.sub_mask_head(last_features, sub_bbox_mask,
-                                               [feats[2], feats[1], feats[0]])
-            outputs_sub_seg_masks = sub_seg_masks.view(batch_size,
-                                                       self.num_query,
-                                                       sub_seg_masks.shape[-2],
-                                                       sub_seg_masks.shape[-1])
-            obj_seg_masks = self.obj_mask_head(last_features, obj_bbox_mask,
-                                               [feats[2], feats[1], feats[0]])
-            outputs_obj_seg_masks = obj_seg_masks.view(batch_size,
-                                                       self.num_query,
-                                                       obj_seg_masks.shape[-2],
-                                                       obj_seg_masks.shape[-1])
-
-            all_bbox_preds = dict(sub=sub_outputs_coord,
-                                  obj=obj_outputs_coord,
-                                  sub_seg=outputs_sub_seg_masks,
-                                  obj_seg=outputs_obj_seg_masks)
-        else:
-            all_bbox_preds = dict(sub=sub_outputs_coord, obj=obj_outputs_coord)
-        return all_cls_scores, all_bbox_preds
 
     @force_fp32(apply_to=('all_cls_scores_list', 'all_bbox_preds_list'))
     def loss(self,
@@ -860,6 +798,67 @@ class PSGTrHead(AnchorFreeHead):
                 s_bbox_weights, o_bbox_weights, s_mask_targets, o_mask_targets,
                 pos_inds, neg_inds, s_mask_preds, o_mask_preds
                 )  # return the interpolated predicted masks
+
+    def forward(self, feats, img_metas):
+        # construct binary masks which used for the transformer.
+        # NOTE following the official DETR repo, non-zero values representing
+        # ignored positions, while zero values means valid positions.
+        last_features = feats[
+            -1]  # get feature outputs of intermediate layers
+        batch_size = last_features.size(0)
+        input_img_h, input_img_w = img_metas[0]['batch_input_shape']
+        masks = last_features.new_ones((batch_size, input_img_h, input_img_w))
+        for img_id in range(batch_size):
+            img_h, img_w, _ = img_metas[img_id]['img_shape']
+            masks[img_id, :img_h, :img_w] = 0
+
+        last_features = self.input_proj(last_features)
+        # interpolate masks to have the same spatial shape with feats
+        masks = F.interpolate(masks.unsqueeze(1),
+                              size=last_features.shape[-2:]).to(
+                                  torch.bool).squeeze(1)
+        # position encoding
+        pos_embed = self.positional_encoding(masks)  # [bs, embed_dim, h, w]
+        # outs_dec: [nb_dec, bs, num_query, embed_dim]
+        outs_dec, memory = self.transformer(last_features, masks,
+                                            self.query_embed.weight, pos_embed)
+
+        sub_outputs_class = self.sub_cls_embed(outs_dec)
+        sub_outputs_coord = self.sub_box_embed(outs_dec).sigmoid()
+        obj_outputs_class = self.obj_cls_embed(outs_dec)
+        obj_outputs_coord = self.obj_box_embed(outs_dec).sigmoid()
+
+        all_cls_scores = dict(sub=sub_outputs_class, obj=obj_outputs_class)
+        rel_outputs_class = self.rel_cls_embed(outs_dec)
+        all_cls_scores['rel'] = rel_outputs_class
+        if self.use_mask:
+            ###########for segmentation#################
+            sub_bbox_mask = self.sub_bbox_attention(outs_dec[-1],
+                                                    memory,
+                                                    mask=masks)
+            obj_bbox_mask = self.obj_bbox_attention(outs_dec[-1],
+                                                    memory,
+                                                    mask=masks)
+            sub_seg_masks = self.sub_mask_head(last_features, sub_bbox_mask,
+                                               [feats[2], feats[1], feats[0]])
+            outputs_sub_seg_masks = sub_seg_masks.view(batch_size,
+                                                       self.num_query,
+                                                       sub_seg_masks.shape[-2],
+                                                       sub_seg_masks.shape[-1])
+            obj_seg_masks = self.obj_mask_head(last_features, obj_bbox_mask,
+                                               [feats[2], feats[1], feats[0]])
+            outputs_obj_seg_masks = obj_seg_masks.view(batch_size,
+                                                       self.num_query,
+                                                       obj_seg_masks.shape[-2],
+                                                       obj_seg_masks.shape[-1])
+
+            all_bbox_preds = dict(sub=sub_outputs_coord,
+                                  obj=obj_outputs_coord,
+                                  sub_seg=outputs_sub_seg_masks,
+                                  obj_seg=outputs_obj_seg_masks)
+        else:
+            all_bbox_preds = dict(sub=sub_outputs_coord, obj=obj_outputs_coord)
+        return all_cls_scores, all_bbox_preds
 
     # over-write because img_metas are needed as inputs for bbox_head.
     def forward_train(self,
