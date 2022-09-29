@@ -2,8 +2,9 @@
 #SBATCH --output=/scratch/users/%u/logs/%j.out
 #SBATCH --job-name=openpsg
 #SBATCH --gres=gpu:1
-#SBATCH --cpus-per-task=4
+#SBATCH --cpus-per-task=7
 #SBATCH --ntasks-per-node=1
+#SBATCH --mem-per-cpu=65536
 #SBATCH --time=2-00:00
 
 source ~/.bashrc
