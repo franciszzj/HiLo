@@ -21,40 +21,6 @@ from openpsg.models.relation_heads.psgtr_head import MLP
 
 @HEADS.register_module()
 class PSGMaskFormerHead(AnchorFreeHead):
-    """Implements the PSGMaskFormer head.
-
-    See `Per-Pixel Classification is Not All You Need for Semantic
-    Segmentation <https://arxiv.org/pdf/2107.06278>`_ for details.
-
-    Args:
-        in_channels (list[int]): Number of channels in the input feature map.
-        feat_channels (int): Number of channels for feature.
-        out_channels (int): Number of channels for output.
-        num_things_classes (int): Number of things.
-        num_stuff_classes (int): Number of stuff.
-        num_queries (int): Number of query in Transformer.
-        pixel_decoder (:obj:`mmcv.ConfigDict` | dict): Config for pixel
-            decoder. Defaults to None.
-        enforce_decoder_input_project (bool, optional): Whether to add a layer
-            to change the embed_dim of tranformer encoder in pixel decoder to
-            the embed_dim of transformer decoder. Defaults to False.
-        transformer_decoder (:obj:`mmcv.ConfigDict` | dict): Config for
-            transformer decoder. Defaults to None.
-        positional_encoding (:obj:`mmcv.ConfigDict` | dict): Config for
-            transformer decoder position encoding. Defaults to None.
-        loss_cls (:obj:`mmcv.ConfigDict` | dict): Config of the classification
-            loss. Defaults to `CrossEntropyLoss`.
-        loss_mask (:obj:`mmcv.ConfigDict` | dict): Config of the mask loss.
-            Defaults to `FocalLoss`.
-        loss_dice (:obj:`mmcv.ConfigDict` | dict): Config of the dice loss.
-            Defaults to `DiceLoss`.
-        train_cfg (:obj:`mmcv.ConfigDict` | dict): Training config of
-            PSGMaskformer head.
-        test_cfg (:obj:`mmcv.ConfigDict` | dict): Testing config of PSGMaskformer
-            head.
-        init_cfg (dict or list[dict], optional): Initialization config dict.
-            Defaults to None.
-    """
 
     def __init__(self,
                  in_channels,
@@ -212,26 +178,28 @@ class PSGMaskFormerHead(AnchorFreeHead):
                 train_cfg.get('sampler', None), context=self)
 
         # 5. Loss
-        # self.class_weight = loss_cls.get('class_weight', None)
-        # self.loss_cls = build_loss(loss_cls)
-        # self.loss_mask = build_loss(loss_mask)
-        # self.loss_dice = build_loss(loss_dice)
-
+        # NOTE following the official DETR rep0, bg_cls_weight means
+        # relative classification weight of the no-object class.
         if not sub_loss_cls.use_sigmoid:
             s_class_weight = sub_loss_cls.get('class_weight', None)
             s_class_weight = torch.ones(num_classes + 1) * s_class_weight
+            # NOTE set background class as the last indice
             s_class_weight[-1] = bg_cls_weight
             sub_loss_cls.update({'class_weight': s_class_weight})
         if not obj_loss_cls.use_sigmoid:
             o_class_weight = obj_loss_cls.get('class_weight', None)
             o_class_weight = torch.ones(num_classes + 1) * o_class_weight
+            # NOTE set background class as the last indice
             o_class_weight[-1] = bg_cls_weight
             obj_loss_cls.update({'class_weight': o_class_weight})
         if not rel_loss_cls.use_sigmoid:
             r_class_weight = rel_loss_cls.get('class_weight', None)
             r_class_weight = torch.ones(num_relations + 1) * r_class_weight
-            r_class_weight[-1] = bg_cls_weight
+            # NOTE set background class as the first indice for relations as they are 1-based
+            r_class_weight[0] = bg_cls_weight
             rel_loss_cls.update({'class_weight': r_class_weight})
+            if 'bg_cls_weight' in rel_loss_cls:
+                rel_loss_cls.pop('bg_cls_weight')
 
         self.sub_loss_cls = build_loss(sub_loss_cls)  # cls
         self.sub_loss_bbox = build_loss(sub_loss_bbox)  # bbox
