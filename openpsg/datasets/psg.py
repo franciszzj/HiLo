@@ -142,14 +142,10 @@ class PanopticSceneGraphDataset(CocoPanopticDataset):
             for a, s in zip(d['annotations'], d['segments_info']):
 
                 segments_info.append({
-                    'id':
-                    s['id'],
-                    'category_id':
-                    s['category_id'],
-                    'iscrowd':
-                    s['iscrowd'],
-                    'area':
-                    int(s['area']),
+                    'id': s['id'],
+                    'category_id': s['category_id'],
+                    'iscrowd': s['iscrowd'],
+                    'area': int(s['area']),
                     # Convert from xyxy to xywh
                     'bbox': [
                         a['bbox'][0],
