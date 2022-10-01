@@ -1,15 +1,11 @@
 # Copyright (c) OpenMMLab. All rights reserved.
-import time
 from collections import defaultdict
-from inspect import signature
-
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import torchvision
 from mmcv.cnn import Conv2d, Linear, build_activation_layer
-from mmcv.cnn.bricks.transformer import FFN, build_positional_encoding
-from mmcv.ops import batched_nms
+from mmcv.cnn.bricks.transformer import build_positional_encoding
 from mmcv.runner import force_fp32
 from mmdet.core import (build_assigner, build_sampler, multi_apply, reduce_mean,
                         bbox_cxcywh_to_xyxy, bbox_xyxy_to_cxcywh)
@@ -17,37 +13,28 @@ from mmdet.datasets.coco_panoptic import INSTANCE_OFFSET
 from mmdet.models.builder import HEADS, build_loss
 from mmdet.models.dense_heads import AnchorFreeHead
 from mmdet.models.utils import build_transformer
-# imports for tools
-from packaging import version
-
-if version.parse(torchvision.__version__) < version.parse('0.7'):
-    from torchvision.ops import _new_empty_tensor
-    from torchvision.ops.misc import _output_size
 
 
 @HEADS.register_module()
 class PSGTrHead(AnchorFreeHead):
-
-    _version = 2
-
     def __init__(
             self,
-            num_classes,
             in_channels,
-            num_relations,
-            object_classes,
-            predicate_classes,
-            use_mask=True,
+            num_classes=133,
+            num_relations=56,
+            object_classes=None,
+            predicate_classes=None,
             num_query=100,
-            num_reg_fcs=2,
-            transformer=None,
-            n_heads=8,
-            swin_backbone=None,
             sync_cls_avg_factor=False,
             bg_cls_weight=0.02,
+            use_mask=True,
+            num_reg_fcs=2,
+            n_heads=8,
+            swin_backbone=None,
             positional_encoding=dict(type='SinePositionalEncoding',
                                      num_feats=128,
                                      normalize=True),
+            transformer=None,
             sub_loss_cls=dict(type='CrossEntropyLoss',
                               use_sigmoid=False,
                               loss_weight=1.0,
@@ -80,53 +67,90 @@ class PSGTrHead(AnchorFreeHead):
             test_cfg=dict(max_per_img=100),
             init_cfg=None,
             **kwargs):
-
         super(AnchorFreeHead, self).__init__(init_cfg)
+        # 1. Config
+        self.num_classes = num_classes  # 133 for COCO
+        self.num_relations = num_relations  # 56 for PSG Dataset
+        self.object_classes = object_classes
+        self.predicate_classes = predicate_classes
+        self.num_query = num_query  # 100
         self.sync_cls_avg_factor = sync_cls_avg_factor
-        # NOTE following the official DETR rep0, bg_cls_weight means
-        # relative classification weight of the no-object class.
-        assert isinstance(bg_cls_weight, float), 'Expected ' \
-            'bg_cls_weight to have type float. Found ' \
-            f'{type(bg_cls_weight)}.'
         self.bg_cls_weight = bg_cls_weight
-
-        assert isinstance(use_mask, bool), 'Expected ' \
-            'use_mask to have type bool. Found ' \
-            f'{type(use_mask)}.'
         self.use_mask = use_mask
+        self.num_reg_fcs = num_reg_fcs  # not use
+        self.train_cfg = train_cfg
+        self.test_cfg = test_cfg
+        self.fp16_enabled = False
+        self.swin = swin_backbone
 
-        s_class_weight = sub_loss_cls.get('class_weight', None)
-        assert isinstance(s_class_weight, float), 'Expected ' \
-            'class_weight to have type float. Found ' \
-            f'{type(s_class_weight)}.'
+        # 2. Head, Transformer
+        self.n_heads = n_heads
+        self.act_cfg = transformer.get('act_cfg',
+                                       dict(type='ReLU', inplace=True))
+        self.activate = build_activation_layer(self.act_cfg)  # not use
+        self.positional_encoding = build_positional_encoding(
+            positional_encoding)
+        self.transformer = build_transformer(transformer)
+        self.embed_dims = self.transformer.embed_dims
+        assert 'num_feats' in positional_encoding
+        num_feats = positional_encoding['num_feats']
+        assert num_feats * 2 == self.embed_dims, 'embed_dims should' \
+            f' be exactly 2 times of num_feats. Found {self.embed_dims}' \
+            f' and {num_feats}.'
+        self.input_proj = Conv2d(in_channels,
+                                 self.embed_dims,
+                                 kernel_size=1)
+        self.query_embed = nn.Embedding(self.num_query, self.embed_dims)
 
-        s_class_weight = torch.ones(num_classes + 1) * s_class_weight
-        # NOTE set background class as the last indice
-        s_class_weight[-1] = bg_cls_weight
-        sub_loss_cls.update({'class_weight': s_class_weight})
+        # 3. Pred
+        self.sub_cls_out_channels = self.num_classes if sub_loss_cls['use_sigmoid'] \
+            else self.num_classes + 1
+        self.obj_cls_out_channels = self.num_classes if obj_loss_cls['use_sigmoid'] \
+            else self.num_classes + 1
+        self.rel_cls_out_channels = self.num_relations if rel_loss_cls['use_sigmoid'] \
+            else self.num_relations + 1
 
-        o_class_weight = obj_loss_cls.get('class_weight', None)
-        assert isinstance(o_class_weight, float), 'Expected ' \
-            'class_weight to have type float. Found ' \
-            f'{type(o_class_weight)}.'
+        self.sub_cls_embed = Linear(
+            self.embed_dims, self.sub_cls_out_channels)
+        self.sub_box_embed = MLP(
+            self.embed_dims, self.embed_dims, 4, 3)
+        self.obj_cls_embed = Linear(
+            self.embed_dims, self.obj_cls_out_channels)
+        self.obj_box_embed = MLP(
+            self.embed_dims, self.embed_dims, 4, 3)
+        self.rel_cls_embed = Linear(
+            self.embed_dims, self.rel_cls_out_channels)
+        if self.use_mask:
+            self.sub_bbox_attention = MHAttentionMap(
+                self.embed_dims,
+                self.embed_dims,
+                self.n_heads,
+                dropout=0.0)
+            self.obj_bbox_attention = MHAttentionMap(
+                self.embed_dims,
+                self.embed_dims,
+                self.n_heads,
+                dropout=0.0)
+            if not self.swin:
+                self.sub_mask_head = MaskHeadSmallConv(
+                    self.embed_dims + self.n_heads,
+                    [1024, 512, 256],
+                    self.embed_dims)
+                self.obj_mask_head = MaskHeadSmallConv(
+                    self.embed_dims + self.n_heads,
+                    [1024, 512, 256],
+                    self.embed_dims)
+            elif self.swin:
+                self.sub_mask_head = MaskHeadSmallConv(
+                    self.embed_dims + self.n_heads,
+                    self.swin,
+                    self.embed_dims)
+                self.obj_mask_head = MaskHeadSmallConv(
+                    self.embed_dims + self.n_heads,
+                    self.swin,
+                    self.embed_dims)
 
-        o_class_weight = torch.ones(num_classes + 1) * o_class_weight
-        # NOTE set background class as the last indice
-        o_class_weight[-1] = bg_cls_weight
-        obj_loss_cls.update({'class_weight': o_class_weight})
-
-        r_class_weight = rel_loss_cls.get('class_weight', None)
-        assert isinstance(r_class_weight, float), 'Expected ' \
-            'class_weight to have type float. Found ' \
-            f'{type(r_class_weight)}.'
-
-        r_class_weight = torch.ones(num_relations + 1) * r_class_weight
-        # NOTE set background class as the first indice for relations as they are 1-based
-        r_class_weight[0] = bg_cls_weight
-        rel_loss_cls.update({'class_weight': r_class_weight})
-        if 'bg_cls_weight' in rel_loss_cls:
-            rel_loss_cls.pop('bg_cls_weight')
-
+        # 4. Assigner and Sampler
         if train_cfg:
             assert 'assigner' in train_cfg, 'assigner should be provided '\
                 'when train_cfg is set.'
@@ -152,6 +176,15 @@ class PSGTrHead(AnchorFreeHead):
             assert obj_loss_iou['loss_weight'] == assigner['o_iou_cost']['weight'], \
                 'The regression iou weight for loss and matcher should be' \
                 'exactly the same.'
+            if train_cfg.assigner.type == 'HTriMatcher':
+                if 's_focal_cost' in assigner.keys():
+                    del assigner['s_focal_cost']
+                if 's_dice_cost' in assigner.keys():
+                    del assigner['s_dice_cost']
+                if 'o_focal_cost' in assigner.keys():
+                    del assigner['o_focal_cost']
+                if 'o_dice_cost' in assigner.keys():
+                    del assigner['o_dice_cost']
             if train_cfg.assigner.type == 'MaskHTriMatcher':
                 assert sub_focal_loss['loss_weight'] == assigner['s_focal_cost']['weight'], \
                     'The mask focal loss weight for loss and matcher should be exactly the same.'
@@ -163,99 +196,45 @@ class PSGTrHead(AnchorFreeHead):
                     'The mask dice loss weight for loss and matcher should be exactly the same.'
             self.assigner = build_assigner(assigner)
             # following DETR sampling=False, so use PseudoSampler
-            sampler_cfg = dict(type='PseudoSampler')
+            sampler_cfg = train_cfg.get('sampler', dict(type='PseudoSampler'))
             self.sampler = build_sampler(sampler_cfg, context=self)
-        self.num_query = num_query
-        self.num_classes = num_classes
-        self.num_relations = num_relations
-        self.object_classes = object_classes
-        self.predicate_classes = predicate_classes
-        self.in_channels = in_channels
-        self.num_reg_fcs = num_reg_fcs
-        self.train_cfg = train_cfg
-        self.test_cfg = test_cfg
-        self.fp16_enabled = False
-        self.swin = swin_backbone
 
-        self.obj_loss_cls = build_loss(obj_loss_cls)
-        self.obj_loss_bbox = build_loss(obj_loss_bbox)
-        self.obj_loss_iou = build_loss(obj_loss_iou)
+        # 5. Loss
+        # NOTE following the official DETR rep0, bg_cls_weight means
+        # relative classification weight of the no-object class.
+        if not sub_loss_cls.use_sigmoid:
+            s_class_weight = sub_loss_cls.get('class_weight', None)
+            s_class_weight = torch.ones(num_classes + 1) * s_class_weight
+            # NOTE set background class as the last indice
+            s_class_weight[-1] = bg_cls_weight
+            sub_loss_cls.update({'class_weight': s_class_weight})
+        if not obj_loss_cls.use_sigmoid:
+            o_class_weight = obj_loss_cls.get('class_weight', None)
+            o_class_weight = torch.ones(num_classes + 1) * o_class_weight
+            # NOTE set background class as the last indice
+            o_class_weight[-1] = bg_cls_weight
+            obj_loss_cls.update({'class_weight': o_class_weight})
+        if not rel_loss_cls.use_sigmoid:
+            r_class_weight = rel_loss_cls.get('class_weight', None)
+            r_class_weight = torch.ones(num_relations + 1) * r_class_weight
+            # NOTE set background class as the first indice for relations as they are 1-based
+            r_class_weight[0] = bg_cls_weight
+            rel_loss_cls.update({'class_weight': r_class_weight})
+            if 'bg_cls_weight' in rel_loss_cls:
+                rel_loss_cls.pop('bg_cls_weight')
 
-        self.sub_loss_cls = build_loss(sub_loss_cls)
-        self.sub_loss_bbox = build_loss(sub_loss_bbox)
-        self.sub_loss_iou = build_loss(sub_loss_iou)
+        self.sub_loss_cls = build_loss(sub_loss_cls)  # cls
+        self.sub_loss_bbox = build_loss(sub_loss_bbox)  # bbox
+        self.sub_loss_iou = build_loss(sub_loss_iou)  # bbox
+        self.obj_loss_cls = build_loss(obj_loss_cls)  # cls
+        self.obj_loss_bbox = build_loss(obj_loss_bbox)  # bbox
+        self.obj_loss_iou = build_loss(obj_loss_iou)  # bbox
         if self.use_mask:
-            self.obj_focal_loss = build_loss(obj_focal_loss)
-            self.obj_dice_loss = build_loss(obj_dice_loss)
-            self.sub_focal_loss = build_loss(sub_focal_loss)
-            self.sub_dice_loss = build_loss(sub_dice_loss)
-
-        self.rel_loss_cls = build_loss(rel_loss_cls)
-
-        if self.obj_loss_cls.use_sigmoid:
-            self.obj_cls_out_channels = num_classes
-        else:
-            self.obj_cls_out_channels = num_classes + 1
-
-        if self.sub_loss_cls.use_sigmoid:
-            self.sub_cls_out_channels = num_classes
-        else:
-            self.sub_cls_out_channels = num_classes + 1
-
-        if rel_loss_cls['use_sigmoid']:
-            self.rel_cls_out_channels = num_relations
-        else:
-            self.rel_cls_out_channels = num_relations + 1
-
-        self.act_cfg = transformer.get('act_cfg',
-                                       dict(type='ReLU', inplace=True))
-        self.activate = build_activation_layer(self.act_cfg)
-        self.positional_encoding = build_positional_encoding(
-            positional_encoding)
-        self.transformer = build_transformer(transformer)
-        self.n_heads = n_heads
-        self.embed_dims = self.transformer.embed_dims
-        assert 'num_feats' in positional_encoding
-        num_feats = positional_encoding['num_feats']
-        assert num_feats * 2 == self.embed_dims, 'embed_dims should' \
-            f' be exactly 2 times of num_feats. Found {self.embed_dims}' \
-            f' and {num_feats}.'
-        self._init_layers()
-
-    def _init_layers(self):
-        """Initialize layers of the transformer head."""
-        self.input_proj = Conv2d(self.in_channels,
-                                 self.embed_dims,
-                                 kernel_size=1)
-        self.query_embed = nn.Embedding(self.num_query, self.embed_dims)
-
-        self.obj_cls_embed = Linear(self.embed_dims, self.obj_cls_out_channels)
-        self.obj_box_embed = MLP(self.embed_dims, self.embed_dims, 4, 3)
-        self.sub_cls_embed = Linear(self.embed_dims, self.sub_cls_out_channels)
-        self.sub_box_embed = MLP(self.embed_dims, self.embed_dims, 4, 3)
-        self.rel_cls_embed = Linear(self.embed_dims, self.rel_cls_out_channels)
-
-        if self.use_mask:
-            self.sub_bbox_attention = MHAttentionMap(self.embed_dims,
-                                                     self.embed_dims,
-                                                     self.n_heads,
-                                                     dropout=0.0)
-            self.obj_bbox_attention = MHAttentionMap(self.embed_dims,
-                                                     self.embed_dims,
-                                                     self.n_heads,
-                                                     dropout=0.0)
-            if not self.swin:
-                self.sub_mask_head = MaskHeadSmallConv(
-                    self.embed_dims + self.n_heads, [1024, 512, 256],
-                    self.embed_dims)
-                self.obj_mask_head = MaskHeadSmallConv(
-                    self.embed_dims + self.n_heads, [1024, 512, 256],
-                    self.embed_dims)
-            elif self.swin:
-                self.sub_mask_head = MaskHeadSmallConv(
-                    self.embed_dims + self.n_heads, self.swin, self.embed_dims)
-                self.obj_mask_head = MaskHeadSmallConv(
-                    self.embed_dims + self.n_heads, self.swin, self.embed_dims)
+            self.obj_focal_loss = build_loss(obj_focal_loss)  # mask
+            self.obj_dice_loss = build_loss(obj_dice_loss)  # mask
+            self.sub_focal_loss = build_loss(sub_focal_loss)  # mask
+            self.sub_dice_loss = build_loss(sub_dice_loss)  # mask
+        self.rel_loss_cls = build_loss(rel_loss_cls)  # rel
 
     def init_weights(self):
         """Initialize weights of the transformer head."""
@@ -313,11 +292,9 @@ class PSGTrHead(AnchorFreeHead):
             all_s_mask_preds = all_bbox_preds['sub_seg']
             all_o_mask_preds = all_bbox_preds['obj_seg']
             all_s_mask_preds = [
-                all_s_mask_preds for _ in range(num_dec_layers)
-            ]
+                all_s_mask_preds for _ in range(num_dec_layers)]
             all_o_mask_preds = [
-                all_o_mask_preds for _ in range(num_dec_layers)
-            ]
+                all_o_mask_preds for _ in range(num_dec_layers)]
 
         all_gt_bboxes_list = [gt_bboxes_list for _ in range(num_dec_layers)]
         all_gt_labels_list = [gt_labels_list for _ in range(num_dec_layers)]
@@ -332,21 +309,27 @@ class PSGTrHead(AnchorFreeHead):
         all_r_cls_scores = all_cls_scores['rel']
 
         if self.use_mask:
-            s_losses_cls, o_losses_cls, r_losses_cls, s_losses_bbox, o_losses_bbox, s_losses_iou, o_losses_iou, s_focal_losses, s_dice_losses, o_focal_losses, o_dice_losses = multi_apply(
-                self.loss_single, all_s_cls_scores, all_o_cls_scores,
-                all_r_cls_scores, all_s_bbox_preds, all_o_bbox_preds,
-                all_s_mask_preds, all_o_mask_preds, all_gt_rels_list,
-                all_gt_bboxes_list, all_gt_labels_list, all_gt_masks_list,
-                img_metas_list, all_gt_bboxes_ignore_list)
+            s_losses_cls, o_losses_cls, r_losses_cls, \
+                s_losses_bbox, o_losses_bbox, s_losses_iou, o_losses_iou, \
+                s_focal_losses, s_dice_losses, o_focal_losses, o_dice_losses = \
+                multi_apply(self.loss_single,
+                            all_s_cls_scores, all_o_cls_scores, all_r_cls_scores,
+                            all_s_bbox_preds, all_o_bbox_preds,
+                            all_s_mask_preds, all_o_mask_preds,
+                            all_gt_rels_list, all_gt_bboxes_list, all_gt_labels_list,
+                            all_gt_masks_list, img_metas_list, all_gt_bboxes_ignore_list)
         else:
             all_s_mask_preds = [None for _ in range(num_dec_layers)]
             all_o_mask_preds = [None for _ in range(num_dec_layers)]
-            s_losses_cls, o_losses_cls, r_losses_cls, s_losses_bbox, o_losses_bbox, s_losses_iou, o_losses_iou, s_focal_losses, s_dice_losses, o_focal_losses, o_dice_losses = multi_apply(
-                self.loss_single, all_s_cls_scores, all_o_cls_scores,
-                all_r_cls_scores, all_s_bbox_preds, all_o_bbox_preds,
-                all_s_mask_preds, all_o_mask_preds, all_gt_rels_list,
-                all_gt_bboxes_list, all_gt_labels_list, all_gt_masks_list,
-                img_metas_list, all_gt_bboxes_ignore_list)
+            s_losses_cls, o_losses_cls, r_losses_cls, \
+                s_losses_bbox, o_losses_bbox, s_losses_iou, o_losses_iou, \
+                s_focal_losses, s_dice_losses, o_focal_losses, o_dice_losses = \
+                multi_apply(self.loss_single,
+                            all_s_cls_scores, all_o_cls_scores, all_r_cls_scores,
+                            all_s_bbox_preds, all_o_bbox_preds,
+                            all_s_mask_preds, all_o_mask_preds,
+                            all_gt_rels_list, all_gt_bboxes_list, all_gt_labels_list,
+                            all_gt_masks_list, img_metas_list, all_gt_bboxes_ignore_list)
 
         loss_dict = dict()
         # loss from the last decoder layer
@@ -411,15 +394,18 @@ class PSGTrHead(AnchorFreeHead):
 
         cls_reg_targets = self.get_targets(
             s_cls_scores_list, o_cls_scores_list, r_cls_scores_list,
-            s_bbox_preds_list, o_bbox_preds_list, s_mask_preds_list,
-            o_mask_preds_list, gt_rels_list, gt_bboxes_list, gt_labels_list,
-            gt_masks_list, img_metas, gt_bboxes_ignore_list)
+            s_bbox_preds_list, o_bbox_preds_list,
+            s_mask_preds_list, o_mask_preds_list,
+            gt_rels_list, gt_bboxes_list, gt_labels_list, gt_masks_list,
+            img_metas, gt_bboxes_ignore_list)
 
-        (s_labels_list, o_labels_list, r_labels_list, s_label_weights_list,
-         o_label_weights_list, r_label_weights_list, s_bbox_targets_list,
-         o_bbox_targets_list, s_bbox_weights_list, o_bbox_weights_list,
-         s_mask_targets_list, o_mask_targets_list, num_total_pos,
-         num_total_neg, s_mask_preds_list, o_mask_preds_list) = cls_reg_targets
+        (s_labels_list, o_labels_list, r_labels_list,
+         s_label_weights_list, o_label_weights_list, r_label_weights_list,
+         s_bbox_targets_list, o_bbox_targets_list,
+         s_bbox_weights_list, o_bbox_weights_list,
+         s_mask_targets_list, o_mask_targets_list,
+         num_total_pos, num_total_neg,
+         s_mask_preds_list, o_mask_preds_list) = cls_reg_targets
         s_labels = torch.cat(s_labels_list, 0)
         o_labels = torch.cat(o_labels_list, 0)
         r_labels = torch.cat(r_labels_list, 0)
@@ -537,7 +523,9 @@ class PSGTrHead(AnchorFreeHead):
                                          o_bbox_targets,
                                          o_bbox_weights,
                                          avg_factor=num_total_pos)
-        return s_loss_cls, o_loss_cls, r_loss_cls, s_loss_bbox, o_loss_bbox, s_loss_iou, o_loss_iou, s_focal_loss, s_dice_loss, o_focal_loss, o_dice_loss
+        return s_loss_cls, o_loss_cls, r_loss_cls, \
+            s_loss_bbox, o_loss_bbox, s_loss_iou, o_loss_iou, \
+            s_focal_loss, s_dice_loss, o_focal_loss, o_dice_loss
 
     def get_targets(self,
                     s_cls_scores_list,
@@ -561,23 +549,27 @@ class PSGTrHead(AnchorFreeHead):
             gt_bboxes_ignore_list for _ in range(num_imgs)
         ]
 
-        (s_labels_list, o_labels_list, r_labels_list, s_label_weights_list,
-         o_label_weights_list, r_label_weights_list, s_bbox_targets_list,
-         o_bbox_targets_list, s_bbox_weights_list, o_bbox_weights_list,
-         s_mask_targets_list, o_mask_targets_list, pos_inds_list,
-         neg_inds_list, s_mask_preds_list, o_mask_preds_list) = multi_apply(
-             self._get_target_single, s_cls_scores_list, o_cls_scores_list,
-             r_cls_scores_list, s_bbox_preds_list, o_bbox_preds_list,
-             s_mask_preds_list, o_mask_preds_list, gt_rels_list,
-             gt_bboxes_list, gt_labels_list, gt_masks_list, img_metas,
-             gt_bboxes_ignore_list)
+        (s_labels_list, o_labels_list, r_labels_list,
+         s_label_weights_list, o_label_weights_list, r_label_weights_list,
+         s_bbox_targets_list, o_bbox_targets_list,
+         s_bbox_weights_list, o_bbox_weights_list,
+         s_mask_targets_list, o_mask_targets_list,
+         pos_inds_list, neg_inds_list,
+         s_mask_preds_list, o_mask_preds_list) = \
+            multi_apply(self._get_target_single,
+            s_cls_scores_list, o_cls_scores_list, r_cls_scores_list,
+            s_bbox_preds_list, o_bbox_preds_list,
+            s_mask_preds_list, o_mask_preds_list,
+            gt_rels_list, gt_bboxes_list, gt_labels_list, gt_masks_list,
+            img_metas, gt_bboxes_ignore_list)
         num_total_pos = sum((inds.numel() for inds in pos_inds_list))
         num_total_neg = sum((inds.numel() for inds in neg_inds_list))
         return (s_labels_list, o_labels_list, r_labels_list,
                 s_label_weights_list, o_label_weights_list,
                 r_label_weights_list, s_bbox_targets_list, o_bbox_targets_list,
-                s_bbox_weights_list, o_bbox_weights_list, s_mask_targets_list,
-                o_mask_targets_list, num_total_pos, num_total_neg,
+                s_bbox_weights_list, o_bbox_weights_list,
+                s_mask_targets_list, o_mask_targets_list,
+                num_total_pos, num_total_neg,
                 s_mask_preds_list, o_mask_preds_list)
 
     def _get_target_single(self,
@@ -677,14 +669,14 @@ class PSGTrHead(AnchorFreeHead):
                 gt_sub_masks).type_as(gt_masks)
             gt_obj_masks = torch.vstack(
                 gt_obj_masks).type_as(gt_masks)
-            s_mask_preds = interpolate(s_mask_preds[:, None],
-                                       size=gt_sub_masks.shape[-2:],
-                                       mode='bilinear',
-                                       align_corners=False).squeeze(1)
-            o_mask_preds = interpolate(o_mask_preds[:, None],
-                                       size=gt_obj_masks.shape[-2:],
-                                       mode='bilinear',
-                                       align_corners=False).squeeze(1)
+            s_mask_preds = F.interpolate(s_mask_preds[:, None],
+                                         size=gt_sub_masks.shape[-2:],
+                                         mode='bilinear',
+                                         align_corners=False).squeeze(1)
+            o_mask_preds = F.interpolate(o_mask_preds[:, None],
+                                         size=gt_obj_masks.shape[-2:],
+                                         mode='bilinear',
+                                         align_corners=False).squeeze(1)
 
         # assigner and sampler, only return subject&object assign result
         if self.train_cfg.assigner.type == 'HTriMatcher':
@@ -752,15 +744,15 @@ class PSGTrHead(AnchorFreeHead):
                 o_sampling_result.pos_assigned_gt_inds, ...]
             o_mask_preds = o_mask_preds[pos_inds]
 
-            # s_mask_preds = interpolate(s_mask_preds[:, None],
-            #                            size=gt_sub_masks.shape[-2:],
-            #                            mode='bilinear',
-            #                            align_corners=False).squeeze(1)
+            # s_mask_preds = F.interpolate(s_mask_preds[:, None],
+            #                              size=gt_sub_masks.shape[-2:],
+            #                              mode='bilinear',
+            #                              align_corners=False).squeeze(1)
 
-            # o_mask_preds = interpolate(o_mask_preds[:, None],
-            #                            size=gt_obj_masks.shape[-2:],
-            #                            mode='bilinear',
-            #                            align_corners=False).squeeze(1)
+            # o_mask_preds = F.interpolate(o_mask_preds[:, None],
+            #                              size=gt_obj_masks.shape[-2:],
+            #                              mode='bilinear',
+            #                              align_corners=False).squeeze(1)
         else:
             s_mask_targets = None
             s_mask_preds = None
@@ -800,11 +792,11 @@ class PSGTrHead(AnchorFreeHead):
                 )  # return the interpolated predicted masks
 
     def forward(self, feats, img_metas):
+        # 1. Forward
         # construct binary masks which used for the transformer.
         # NOTE following the official DETR repo, non-zero values representing
         # ignored positions, while zero values means valid positions.
-        last_features = feats[
-            -1]  # get feature outputs of intermediate layers
+        last_features = feats[-1]
         batch_size = last_features.size(0)
         input_img_h, input_img_w = img_metas[0]['batch_input_shape']
         masks = last_features.new_ones((batch_size, input_img_h, input_img_w))
@@ -820,9 +812,10 @@ class PSGTrHead(AnchorFreeHead):
         # position encoding
         pos_embed = self.positional_encoding(masks)  # [bs, embed_dim, h, w]
         # outs_dec: [nb_dec, bs, num_query, embed_dim]
-        outs_dec, memory = self.transformer(last_features, masks,
-                                            self.query_embed.weight, pos_embed)
+        outs_dec, memory = self.transformer(
+            last_features, masks, self.query_embed.weight, pos_embed)
 
+        # 2. Get outputs
         sub_outputs_class = self.sub_cls_embed(outs_dec)
         sub_outputs_coord = self.sub_box_embed(outs_dec).sigmoid()
         obj_outputs_class = self.obj_cls_embed(outs_dec)
@@ -1373,27 +1366,3 @@ class MHAttentionMap(nn.Module):
         weights = F.softmax(weights.flatten(2), dim=-1).view(weights.size())
         weights = self.dropout(weights)
         return weights
-
-
-def interpolate(input,
-                size=None,
-                scale_factor=None,
-                mode='nearest',
-                align_corners=None):
-    """Equivalent to nn.functional.interpolate, but with support for empty
-    batch sizes.
-
-    This will eventually be supported natively by PyTorch, and this class can
-    go away.
-    """
-    if version.parse(torchvision.__version__) < version.parse('0.7'):
-        if input.numel() > 0:
-            return torch.nn.functional.interpolate(input, size, scale_factor,
-                                                   mode, align_corners)
-
-        output_shape = _output_size(2, input, size, scale_factor)
-        output_shape = list(input.shape[:-2]) + list(output_shape)
-        return _new_empty_tensor(input, output_shape)
-    else:
-        return torchvision.ops.misc.interpolate(input, size, scale_factor,
-                                                mode, align_corners)

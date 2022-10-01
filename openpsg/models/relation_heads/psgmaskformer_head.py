@@ -15,7 +15,6 @@ from mmdet.datasets.coco_panoptic import INSTANCE_OFFSET
 from mmdet.models.utils import preprocess_panoptic_gt
 from mmdet.models.builder import HEADS, build_loss
 from mmdet.models.dense_heads import AnchorFreeHead
-
 from openpsg.models.relation_heads.psgtr_head import MLP
 
 
@@ -97,12 +96,6 @@ class PSGMaskFormerHead(AnchorFreeHead):
         self.query_embed = nn.Embedding(self.num_queries, out_channels)
 
         # 3. Pred
-        # self.cls_embed = nn.Linear(feat_channels, self.num_classes + 1)
-        # self.mask_embed = nn.Sequential(
-        #     nn.Linear(feat_channels, feat_channels), nn.ReLU(inplace=True),
-        #     nn.Linear(feat_channels, feat_channels), nn.ReLU(inplace=True),
-        #     nn.Linear(feat_channels, out_channels))
-
         self.sub_cls_out_channels = self.num_classes if sub_loss_cls['use_sigmoid'] \
             else self.num_classes + 1
         self.obj_cls_out_channels = self.num_classes if obj_loss_cls['use_sigmoid'] \
@@ -174,8 +167,9 @@ class PSGMaskFormerHead(AnchorFreeHead):
                 assert obj_loss_dice['loss_weight'] == assigner['o_dice_cost']['weight'], \
                     'The mask dice loss weight for loss and matcher should be exactly the same.'
             self.assigner = build_assigner(assigner)
-            self.sampler = build_sampler(
-                train_cfg.get('sampler', None), context=self)
+            # following DETR sampling=False, so use PseudoSampler
+            sampler_cfg = train_cfg.get('sampler', dict(type='PseudoSampler'))
+            self.sampler = build_sampler(sampler_cfg, context=self)
 
         # 5. Loss
         # NOTE following the official DETR rep0, bg_cls_weight means
@@ -252,26 +246,6 @@ class PSGMaskFormerHead(AnchorFreeHead):
              gt_rels_list,
              img_metas,
              gt_bboxes_ignore=None):
-        """Loss function.
-
-        Args:
-            all_cls_scores (Tensor): Classification scores for all decoder
-                layers with shape (num_decoder, batch_size, num_queries,
-                cls_out_channels). Note `cls_out_channels` should includes
-                background.
-            all_mask_preds (Tensor): Mask scores for all decoder layers with
-                shape (num_decoder, batch_size, num_queries, h, w).
-            gt_labels_list (list[Tensor]): Ground truth class indices for each
-                image with shape (n, ). n is the sum of number of stuff type
-                and number of instance in a image.
-            gt_masks_list (list[Tensor]): Ground truth mask for each image with
-                shape (n, h, w).
-            img_metas (list[dict]): List of image meta information.
-
-        Returns:
-            dict[str, Tensor]: A dictionary of loss components.
-        """
-
         assert gt_bboxes_ignore is None, \
             'Only supports for gt_bboxes_ignore setting to None.'
 
@@ -295,12 +269,13 @@ class PSGMaskFormerHead(AnchorFreeHead):
 
         s_losses_cls, o_losses_cls, r_losses_cls, \
             s_losses_bbox, o_losses_bbox, s_losses_iou, o_losses_iou, \
-            s_losses_focal, o_losses_focal, s_losses_dice, o_losses_dice = multi_apply(
-                self.loss_single, all_s_cls_scores, all_o_cls_scores,
-                all_r_cls_scores, all_s_bbox_preds, all_o_bbox_preds,
-                all_s_mask_preds, all_o_mask_preds, all_gt_rels_list,
-                all_gt_bboxes_list, all_gt_labels_list, all_gt_masks_list,
-                img_metas_list, all_gt_bboxes_ignore_list)
+            s_losses_focal, o_losses_focal, s_losses_dice, o_losses_dice = \
+            multi_apply(self.loss_single,
+                        all_s_cls_scores, all_o_cls_scores, all_r_cls_scores,
+                        all_s_bbox_preds, all_o_bbox_preds,
+                        all_s_mask_preds, all_o_mask_preds,
+                        all_gt_rels_list, all_gt_bboxes_list, all_gt_labels_list,
+                        all_gt_masks_list, img_metas_list, all_gt_bboxes_ignore_list)
 
         loss_dict = dict()
         # loss from the last decoder layer
@@ -499,7 +474,9 @@ class PSGMaskFormerHead(AnchorFreeHead):
                                          o_bbox_targets,
                                          o_bbox_weights,
                                          avg_factor=num_total_pos)
-        return s_loss_cls, o_loss_cls, r_loss_cls, s_loss_bbox, o_loss_bbox, s_loss_iou, o_loss_iou, s_focal_loss, s_dice_loss, o_focal_loss, o_dice_loss
+        return s_loss_cls, o_loss_cls, r_loss_cls, \
+            s_loss_bbox, o_loss_bbox, s_loss_iou, o_loss_iou, \
+            s_focal_loss, s_dice_loss, o_focal_loss, o_dice_loss
 
     def get_targets(self,
                     s_cls_scores_list,
@@ -716,15 +693,15 @@ class PSGMaskFormerHead(AnchorFreeHead):
                 o_sampling_result.pos_assigned_gt_inds, ...]
             o_mask_preds = o_mask_preds[pos_inds]
 
-            # s_mask_preds = interpolate(s_mask_preds[:, None],
-            #                            size=gt_sub_masks.shape[-2:],
-            #                            mode='bilinear',
-            #                            align_corners=False).squeeze(1)
+            # s_mask_preds = F.interpolate(s_mask_preds[:, None],
+            #                              size=gt_sub_masks.shape[-2:],
+            #                              mode='bilinear',
+            #                              align_corners=False).squeeze(1)
 
-            # o_mask_preds = interpolate(o_mask_preds[:, None],
-            #                            size=gt_obj_masks.shape[-2:],
-            #                            mode='bilinear',
-            #                            align_corners=False).squeeze(1)
+            # o_mask_preds = F.interpolate(o_mask_preds[:, None],
+            #                              size=gt_obj_masks.shape[-2:],
+            #                              mode='bilinear',
+            #                              align_corners=False).squeeze(1)
         else:
             s_mask_targets = None
             s_mask_preds = None
@@ -764,28 +741,7 @@ class PSGMaskFormerHead(AnchorFreeHead):
                 )  # return the interpolated predicted masks
 
     def forward(self, feats, img_metas):
-        """Forward function.
-
-        Args:
-            feats (list[Tensor]): Features from the upstream network, each
-                is a 4D-tensor.
-            img_metas (list[dict]): List of image information.
-
-        Returns:
-            tuple: a tuple contains two elements.
-                - all_cls_scores (Tensor): Classification scores for each\
-                    scale level. Each is a 4D-tensor with shape\
-                    (num_decoder, batch_size, num_queries, cls_out_channels).\
-                    Note `cls_out_channels` should includes background.
-                - all_bbox_preds:  
-                - all_mask_preds (Tensor): Mask scores for each decoder\
-                    layer. Each with shape (num_decoder, batch_size,\
-                    num_queries, h, w).
-        """
-
-        # -----------------------------------------
-        # Forward
-        # -----------------------------------------
+        # 1. Forward
         batch_size = len(img_metas)
         input_img_h, input_img_w = img_metas[0]['batch_input_shape']
         padding_mask = feats[-1].new_ones(
@@ -823,9 +779,7 @@ class PSGMaskFormerHead(AnchorFreeHead):
         # shape (num_decoder, batch_size, num_queries, embed_dims)
         out_dec = out_dec.transpose(1, 2)
 
-        # -----------------------------------------
-        # Get outputs
-        # -----------------------------------------
+        # 2. Get outputs
         sub_outputs_class = self.sub_cls_embed(out_dec)
         obj_outputs_class = self.obj_cls_embed(out_dec)
         rel_outputs_class = self.rel_cls_embed(out_dec)
