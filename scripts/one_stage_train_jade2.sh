@@ -21,4 +21,5 @@ python -m torch.distributed.launch \
   --master_port=$PORT \
   tools/train.py \
   $CONFIG \
+  --auto-resume \
   --launcher pytorch
