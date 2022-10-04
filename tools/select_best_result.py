@@ -19,7 +19,8 @@ def select_best_result(log_json_file):
     mR_weight = 2/3
     best_result_info = (0, 0, 0, '')
     for result in result_list:
-        best_result = best_result_info[1] * R_weight + result[2] * mR_weight
+        best_result = best_result_info[1] * R_weight + \
+            best_result_info[2] * mR_weight
         current_result = result[1] * R_weight + result[2] * mR_weight
         if current_result > best_result:
             best_result_info = result
