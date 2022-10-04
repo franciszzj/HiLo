@@ -26,8 +26,8 @@ def select_best_result(log_json_file):
 
     print('##### Best Result for {} #####'.format(log_json_file))
     print('epoch: {}'.format(best_result_info[0]))
-    print('R_20: {}'.format(best_result_info[1]))
-    print('mR_20: {}'.format(best_result_info[2]))
+    print('R_20: {:.2f}'.format(best_result_info[1] * 100))
+    print('mR_20: {:.2f}'.format(best_result_info[2] * 100))
     print(best_result_info[3])
 
 
