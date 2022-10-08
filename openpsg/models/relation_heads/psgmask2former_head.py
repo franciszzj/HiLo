@@ -399,6 +399,13 @@ class PSGMask2FormerHead(PSGMaskFormerHead):
             all_o_bbox_preds.append(obj_bbox_pred)
             all_s_mask_preds.append(sub_mask_pred)
             all_o_mask_preds.append(obj_mask_pred)
+        all_s_cls_scores = torch.stack(all_s_cls_scores, dim=0)
+        all_o_cls_scores = torch.stack(all_o_cls_scores, dim=0)
+        all_r_cls_scores = torch.stack(all_r_cls_scores, dim=0)
+        all_s_bbox_preds = torch.stack(all_s_bbox_preds, dim=0)
+        all_o_bbox_preds = torch.stack(all_o_bbox_preds, dim=0)
+        all_s_mask_preds = torch.stack(all_s_mask_preds, dim=0)
+        all_o_mask_preds = torch.stack(all_o_mask_preds, dim=0)
         all_cls_scores = dict(
             sub=all_s_cls_scores,
             obj=all_o_cls_scores,
