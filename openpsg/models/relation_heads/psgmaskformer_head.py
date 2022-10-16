@@ -100,8 +100,9 @@ class PSGMaskFormerHead(AnchorFreeHead):
             else self.num_classes + 1
         self.obj_cls_out_channels = self.num_classes if obj_loss_cls['use_sigmoid'] \
             else self.num_classes + 1
-        self.rel_cls_out_channels = self.num_relations if rel_loss_cls['use_sigmoid'] \
-            else self.num_relations + 1
+        # self.rel_cls_out_channels = self.num_relations if rel_loss_cls['use_sigmoid'] \
+        #     else self.num_relations + 1
+        self.rel_cls_out_channels = self.num_relations + 1
 
         self.sub_cls_embed = Linear(
             self.decoder_embed_dims, self.sub_cls_out_channels)
@@ -187,13 +188,16 @@ class PSGMaskFormerHead(AnchorFreeHead):
             o_class_weight[-1] = bg_cls_weight
             obj_loss_cls.update({'class_weight': o_class_weight})
         if not rel_loss_cls.use_sigmoid:
-            r_class_weight = rel_loss_cls.get('class_weight', None)
-            r_class_weight = torch.ones(num_relations + 1) * r_class_weight
-            # NOTE set background class as the first indice for relations as they are 1-based
-            r_class_weight[0] = bg_cls_weight
-            rel_loss_cls.update({'class_weight': r_class_weight})
-            if 'bg_cls_weight' in rel_loss_cls:
-                rel_loss_cls.pop('bg_cls_weight')
+            rel_bg_cls_weight = bg_cls_weight
+        else:
+            rel_bg_cls_weight = 0.
+        r_class_weight = rel_loss_cls.get('class_weight', None)
+        r_class_weight = torch.ones(num_relations + 1) * r_class_weight
+        # NOTE set background class as the first indice for relations as they are 1-based
+        r_class_weight[0] = rel_bg_cls_weight
+        rel_loss_cls.update({'class_weight': r_class_weight})
+        if 'bg_cls_weight' in rel_loss_cls:
+            rel_loss_cls.pop('bg_cls_weight')
 
         self.sub_loss_cls = build_loss(sub_loss_cls)  # cls
         self.sub_loss_bbox = build_loss(sub_loss_bbox)  # bbox
@@ -896,7 +900,7 @@ class PSGMaskFormerHead(AnchorFreeHead):
 
         assert self.sub_loss_cls.use_sigmoid == False
         assert self.obj_loss_cls.use_sigmoid == False
-        assert self.rel_loss_cls.use_sigmoid == False
+        # assert self.rel_loss_cls.use_sigmoid == False
         assert len(s_cls_score) == len(r_cls_score)
 
         # 0-based label input for objects and self.num_classes as default background cls
@@ -906,7 +910,18 @@ class PSGMaskFormerHead(AnchorFreeHead):
         s_scores, s_labels = s_logits.max(-1)
         o_scores, o_labels = o_logits.max(-1)
 
-        r_lgs = F.softmax(r_cls_score, dim=-1)
+        if self.rel_loss_cls.use_sigmoid:
+            r_cls_score[:, 0] = 0
+            r_cls_score = F.sigmoid(r_cls_score)
+            max_rel_index = torch.argmax(r_cls_score, dim=1)
+            offset = max_rel_index.new_tensor(
+                [i * r_cls_score.shape[-1] for i in range(r_cls_score.shape[0])])
+            max_rel_index += offset
+            # No relationship is in index 0.
+            r_cls_score[:, 0] = 1. - torch.take(r_cls_score, max_rel_index)
+            r_lgs = r_cls_score
+        else:
+            r_lgs = F.softmax(r_cls_score, dim=-1)
         r_logits = r_lgs[..., 1:]
         r_scores, r_indexes = r_logits.reshape(-1).topk(max_per_img)
         r_labels = r_indexes % self.num_relations + 1

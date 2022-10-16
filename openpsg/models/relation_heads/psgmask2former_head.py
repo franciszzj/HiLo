@@ -117,8 +117,9 @@ class PSGMask2FormerHead(PSGMaskFormerHead):
             else self.num_classes + 1
         self.obj_cls_out_channels = self.num_classes if obj_loss_cls['use_sigmoid'] \
             else self.num_classes + 1
-        self.rel_cls_out_channels = self.num_relations if rel_loss_cls['use_sigmoid'] \
-            else self.num_relations + 1
+        # self.rel_cls_out_channels = self.num_relations if rel_loss_cls['use_sigmoid'] \
+        #     else self.num_relations + 1
+        self.rel_cls_out_channels = self.num_relations + 1
 
         self.sub_cls_embed = Linear(
             self.decoder_embed_dims, self.sub_cls_out_channels)
@@ -209,13 +210,16 @@ class PSGMask2FormerHead(PSGMaskFormerHead):
             o_class_weight[-1] = bg_cls_weight
             obj_loss_cls.update({'class_weight': o_class_weight})
         if not rel_loss_cls.use_sigmoid:
-            r_class_weight = rel_loss_cls.get('class_weight', None)
-            r_class_weight = torch.ones(num_relations + 1) * r_class_weight
-            # NOTE set background class as the first indice for relations as they are 1-based
-            r_class_weight[0] = bg_cls_weight
-            rel_loss_cls.update({'class_weight': r_class_weight})
-            if 'bg_cls_weight' in rel_loss_cls:
-                rel_loss_cls.pop('bg_cls_weight')
+            rel_bg_cls_weight = bg_cls_weight
+        else:
+            rel_bg_cls_weight = 0.
+        r_class_weight = rel_loss_cls.get('class_weight', None)
+        r_class_weight = torch.ones(num_relations + 1) * r_class_weight
+        # NOTE set background class as the first indice for relations as they are 1-based
+        r_class_weight[0] = rel_bg_cls_weight
+        rel_loss_cls.update({'class_weight': r_class_weight})
+        if 'bg_cls_weight' in rel_loss_cls:
+            rel_loss_cls.pop('bg_cls_weight')
 
         self.sub_loss_cls = build_loss(sub_loss_cls)  # cls
         self.sub_loss_bbox = build_loss(sub_loss_bbox)  # bbox
