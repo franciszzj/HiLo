@@ -1,5 +1,7 @@
 # Copyright (c) OpenMMLab. All rights reserved.
 from collections import defaultdict
+import sys
+import cv2
 import copy
 import torch
 import torch.nn as nn
@@ -41,6 +43,8 @@ class PSGMask2FormerHead(PSGMaskFormerHead):
                  enforce_decoder_input_project=False,
                  positional_encoding=None,
                  transformer_decoder=None,
+                 decoder_cfg=dict(use_query_pred=True,
+                                  ignore_masked_attention_layers=[]),
                  sub_loss_cls=dict(type='CrossEntropyLoss',
                                    use_sigmoid=False,
                                    loss_weight=1.0,
@@ -77,6 +81,7 @@ class PSGMask2FormerHead(PSGMaskFormerHead):
         self.sync_cls_avg_factor = sync_cls_avg_factor
         self.bg_cls_weight = bg_cls_weight
         self.use_mask = use_mask
+        self.decoder_cfg = decoder_cfg
         self.train_cfg = train_cfg
         self.test_cfg = test_cfg
 
@@ -244,7 +249,7 @@ class PSGMask2FormerHead(PSGMaskFormerHead):
             if p.dim() > 1:
                 nn.init.xavier_uniform_(p)
 
-    def forward_head(self, decoder_out, mask_feature, attn_mask_target_size):
+    def forward_head(self, decoder_out, mask_feature, attn_mask_target_size, decoder_layer_idx=0):
         """Forward for head part which is called after every decoder layer.
 
         Args:
@@ -252,6 +257,9 @@ class PSGMask2FormerHead(PSGMaskFormerHead):
             mask_feature (Tensor): in shape (batch_size, c, h, w).
             attn_mask_target_size (tuple[int, int]): target attention
                 mask size.
+            decoder_layer_idx (int): the index number of decoder layer.
+                0 layer means the embedding output from encoder and before
+                feed into the decoder.
 
         Returns:
             tuple: A tuple contain three elements.
@@ -264,6 +272,8 @@ class PSGMask2FormerHead(PSGMaskFormerHead):
             - attn_mask (Tensor): Attention mask in shape \
                 (batch_size * num_heads, num_queries, h, w).
         """
+        debug = False
+
         decoder_out = self.transformer_decoder.post_norm(decoder_out)
         decoder_out = decoder_out.transpose(0, 1)
 
@@ -300,6 +310,14 @@ class PSGMask2FormerHead(PSGMaskFormerHead):
         sub_attn_mask = sub_attn_mask.sigmoid() < 0.5
         sub_attn_mask = sub_attn_mask.detach()
 
+        if debug:
+            for i in range(sub_attn_mask.shape[0]):
+                for j in range(sub_attn_mask.shape[1]):
+                    mask = sub_attn_mask[i, j].reshape(
+                        attn_mask_target_size).float().cpu().numpy() * 255
+                    cv2.imwrite('vis/decoder_layer_{}_sub_attn_mask_head_{}_query_{}.png'.format(
+                        decoder_layer_idx, i, j), mask)
+
         obj_attn_mask = F.interpolate(
             obj_output_mask,
             attn_mask_target_size,
@@ -312,11 +330,31 @@ class PSGMask2FormerHead(PSGMaskFormerHead):
         obj_attn_mask = obj_attn_mask.sigmoid() < 0.5
         obj_attn_mask = obj_attn_mask.detach()
 
+        if debug:
+            for i in range(obj_attn_mask.shape[0]):
+                for j in range(obj_attn_mask.shape[1]):
+                    mask = obj_attn_mask[i, j].reshape(
+                        attn_mask_target_size).float().cpu().numpy() * 255
+                    cv2.imwrite('vis/decoder_layer_{}_obj_attn_mask_head_{}_query_{}.png'.format(
+                        decoder_layer_idx, i, j), mask)
+
         attn_mask = torch.mul(sub_attn_mask, obj_attn_mask)
+
+        if debug:
+            for i in range(attn_mask.shape[0]):
+                for j in range(attn_mask.shape[1]):
+                    mask = attn_mask[i, j].reshape(
+                        attn_mask_target_size).float().cpu().numpy() * 255
+                    cv2.imwrite('vis/decoder_layer_{}_attn_mask_head_{}_query_{}.png'.format(
+                        decoder_layer_idx, i, j), mask)
 
         return all_cls_score, all_bbox_pred, all_mask_pred, attn_mask
 
     def forward(self, feats, img_metas):
+        debug = False
+        if debug:
+            print('\n img_metas for this test image: {}'.format(img_metas))
+
         # 1. Forward
         batch_size = len(img_metas)
 
@@ -348,21 +386,31 @@ class PSGMask2FormerHead(PSGMaskFormerHead):
         cls_pred_list = []
         bbox_pred_list = []
         mask_pred_list = []
-        cls_pred, bbox_pred, mask_pred, attn_mask = self.forward_head(
-            query_feat, mask_features, multi_scale_memorys[0].shape[-2:])
-        cls_pred_list.append(cls_pred)
-        bbox_pred_list.append(bbox_pred)
-        mask_pred_list.append(mask_pred)
+        if self.decoder_cfg.get('use_query_pred', True):
+            cls_pred, bbox_pred, mask_pred, attn_mask = self.forward_head(
+                query_feat, mask_features, multi_scale_memorys[0].shape[-2:], decoder_layer_idx=0)
+            cls_pred_list.append(cls_pred)
+            bbox_pred_list.append(bbox_pred)
+            mask_pred_list.append(mask_pred)
+        else:
+            attn_mask = None
+
+        ignore_masked_attention_layers = self.decoder_cfg.get(
+            'ignore_masked_attention_layers', [])
 
         for i in range(self.num_transformer_decoder_layers):
             level_idx = i % self.num_transformer_feat_level
             # if a mask is all True(all background), then set it all False.
-            attn_mask[torch.where(
-                attn_mask.sum(-1) == attn_mask.shape[-1])] = False
+            if attn_mask is not None:
+                attn_mask[torch.where(
+                    attn_mask.sum(-1) == attn_mask.shape[-1])] = False
 
             # cross_attn + self_attn
             layer = self.transformer_decoder.layers[i]
-            attn_masks = [attn_mask, None]
+            if i in ignore_masked_attention_layers:
+                attn_masks = None
+            else:
+                attn_masks = [attn_mask, None]
             query_feat = layer(
                 query=query_feat,
                 key=decoder_inputs[level_idx],
@@ -376,7 +424,7 @@ class PSGMask2FormerHead(PSGMaskFormerHead):
 
             cls_pred, bbox_pred, mask_pred, attn_mask = self.forward_head(
                 query_feat, mask_features, multi_scale_memorys[
-                    (i + 1) % self.num_transformer_feat_level].shape[-2:])
+                    (i + 1) % self.num_transformer_feat_level].shape[-2:], decoder_layer_idx=i+1)
             cls_pred_list.append(cls_pred)
             bbox_pred_list.append(bbox_pred)
             mask_pred_list.append(mask_pred)
