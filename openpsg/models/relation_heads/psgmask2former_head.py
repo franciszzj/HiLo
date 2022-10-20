@@ -39,6 +39,9 @@ class PSGMask2FormerHead(PSGMaskFormerHead):
                  sync_cls_avg_factor=False,
                  bg_cls_weight=0.02,
                  use_mask=True,
+                 use_relation_query=False,
+                 use_decoder_for_relation_query=True,
+                 mask_self_attn_interact_of_diff_query_types=True,
                  pixel_decoder=None,
                  enforce_decoder_input_project=False,
                  positional_encoding=None,
@@ -81,6 +84,9 @@ class PSGMask2FormerHead(PSGMaskFormerHead):
         self.sync_cls_avg_factor = sync_cls_avg_factor
         self.bg_cls_weight = bg_cls_weight
         self.use_mask = use_mask
+        self.use_relation_query = use_relation_query
+        self.use_decoder_for_relation_query = use_decoder_for_relation_query
+        self.mask_self_attn_interact_of_diff_query_types = mask_self_attn_interact_of_diff_query_types
         self.decoder_cfg = decoder_cfg
         self.train_cfg = train_cfg
         self.test_cfg = test_cfg
@@ -116,6 +122,11 @@ class PSGMask2FormerHead(PSGMaskFormerHead):
         # from low resolution to high resolution
         self.level_embed = nn.Embedding(self.num_transformer_feat_level,
                                         feat_channels)
+        if self.use_relation_query:
+            self.relation_query_embed = nn.Embedding(
+                self.num_relations + 1, out_channels)
+            self.relation_query_feat = nn.Embedding(
+                self.num_relations + 1, feat_channels)
 
         # 3. Pred
         self.sub_cls_out_channels = self.num_classes if sub_loss_cls['use_sigmoid'] \
@@ -124,6 +135,10 @@ class PSGMask2FormerHead(PSGMaskFormerHead):
             else self.num_classes + 1
         # self.rel_cls_out_channels = self.num_relations if rel_loss_cls['use_sigmoid'] \
         #     else self.num_relations + 1
+        # if rel_loss_cls.use_sigmoid is True, the out_channels is still num_relations + 1
+        # because the begin index for relation is 1, not 0. so we can set the out_channels
+        # index 0 to be ignored when use_sigmoid=True, and index 0 to be no_relation when
+        # use_sigmoid=False.
         self.rel_cls_out_channels = self.num_relations + 1
 
         self.sub_cls_embed = Linear(
@@ -134,8 +149,9 @@ class PSGMask2FormerHead(PSGMaskFormerHead):
             self.decoder_embed_dims, self.obj_cls_out_channels)
         self.obj_box_embed = MLP(
             self.decoder_embed_dims, self.decoder_embed_dims, 4, 3)
-        self.rel_cls_embed = Linear(
-            self.decoder_embed_dims, self.rel_cls_out_channels)
+        if not self.use_relation_query:
+            self.rel_cls_embed = Linear(
+                self.decoder_embed_dims, self.rel_cls_out_channels)
         self.sub_mask_embed = nn.Sequential(
             nn.Linear(feat_channels, feat_channels), nn.ReLU(inplace=True),
             nn.Linear(feat_channels, feat_channels), nn.ReLU(inplace=True),
@@ -217,6 +233,7 @@ class PSGMask2FormerHead(PSGMaskFormerHead):
         if not rel_loss_cls.use_sigmoid:
             rel_bg_cls_weight = bg_cls_weight
         else:
+            # When use_sigmoid=True, then ignore the index 0
             rel_bg_cls_weight = 0.
         r_class_weight = rel_loss_cls.get('class_weight', None)
         r_class_weight = torch.ones(num_relations + 1) * r_class_weight
@@ -249,11 +266,14 @@ class PSGMask2FormerHead(PSGMaskFormerHead):
             if p.dim() > 1:
                 nn.init.xavier_uniform_(p)
 
-    def forward_head(self, decoder_out, mask_feature, attn_mask_target_size, decoder_layer_idx=0):
+    def forward_head(self, decoder_out, relation_decoder_out, mask_feature, attn_mask_target_size, decoder_layer_idx=0):
         """Forward for head part which is called after every decoder layer.
 
         Args:
             decoder_out (Tensor): in shape (num_queries, batch_size, c).
+            relation_decoder_out (Tensor or None): in shape
+                (num_relations + 1, batch_size, c). If it is None, then not use
+                relation_decoder_out.
             mask_feature (Tensor): in shape (batch_size, c, h, w).
             attn_mask_target_size (tuple[int, int]): target attention
                 mask size.
@@ -270,16 +290,26 @@ class PSGMask2FormerHead(PSGMaskFormerHead):
             - mask_pred (Tensor): Mask scores in shape \
                 (batch_size, num_queries,h, w).
             - attn_mask (Tensor): Attention mask in shape \
-                (batch_size * num_heads, num_queries, h, w).
+                (batch_size * num_heads, num_queries, h*w). \
+                This attn_mask is used for cross attention.
         """
         debug = False
 
         decoder_out = self.transformer_decoder.post_norm(decoder_out)
         decoder_out = decoder_out.transpose(0, 1)
+        if self.use_relation_query:
+            if self.use_decoder_for_relation_query:
+                relation_decoder_out = self.transformer_decoder.post_norm(
+                    relation_decoder_out)
+            relation_decoder_out = relation_decoder_out.transpose(0, 1)
 
         sub_output_class = self.sub_cls_embed(decoder_out)
         obj_output_class = self.obj_cls_embed(decoder_out)
-        rel_output_class = self.rel_cls_embed(decoder_out)
+        if self.use_relation_query:
+            rel_output_class = torch.einsum(
+                'bqc,brc->bqr', decoder_out, relation_decoder_out)
+        else:
+            rel_output_class = self.rel_cls_embed(decoder_out)
         all_cls_score = dict(sub=sub_output_class,
                              obj=obj_output_class,
                              rel=rel_output_class)
@@ -348,7 +378,15 @@ class PSGMask2FormerHead(PSGMaskFormerHead):
                     cv2.imwrite('vis/decoder_layer_{}_attn_mask_head_{}_query_{}.png'.format(
                         decoder_layer_idx, i, j), mask)
 
-        return all_cls_score, all_bbox_pred, all_mask_pred, attn_mask
+        if self.use_relation_query and self.use_decoder_for_relation_query:
+            relation_attn_mask = attn_mask.new_zeros(
+                (attn_mask.shape[0], self.num_relations+1, attn_mask.shape[2]))
+            all_attn_mask = torch.concat(
+                (attn_mask, relation_attn_mask), dim=1)
+        else:
+            all_attn_mask = attn_mask
+
+        return all_cls_score, all_bbox_pred, all_mask_pred, all_attn_mask
 
     def forward(self, feats, img_metas):
         debug = False
@@ -383,17 +421,37 @@ class PSGMask2FormerHead(PSGMaskFormerHead):
         query_embed = self.query_embed.weight.unsqueeze(1).repeat(
             (1, batch_size, 1))
 
+        if self.use_relation_query:
+            relation_query_feat = self.relation_query_feat.weight.unsqueeze(1).repeat(
+                (1, batch_size, 1))
+            relation_query_embed = self.relation_query_embed.weight.unsqueeze(1).repeat(
+                (1, batch_size, 1))
+            if self.use_decoder_for_relation_query:
+                # (num_queries, batch_size, c) and (num_relations+1， batch_size, c) ->
+                # (num_queries+num_relations+1, batch_size, c)
+                all_query_feat = torch.cat((
+                    query_feat, relation_query_feat), dim=0)
+                all_query_embed = torch.cat(
+                    (query_embed, relation_query_embed), dim=0)
+            else:
+                all_query_feat = query_feat
+                all_query_embed = query_embed
+        else:
+            all_query_feat = query_feat
+            all_query_embed = query_embed
+            relation_query_feat = None
+
         cls_pred_list = []
         bbox_pred_list = []
         mask_pred_list = []
         if self.decoder_cfg.get('use_query_pred', True):
-            cls_pred, bbox_pred, mask_pred, attn_mask = self.forward_head(
-                query_feat, mask_features, multi_scale_memorys[0].shape[-2:], decoder_layer_idx=0)
+            cls_pred, bbox_pred, mask_pred, cross_attn_mask = self.forward_head(
+                query_feat, relation_query_feat, mask_features, multi_scale_memorys[0].shape[-2:], decoder_layer_idx=0)
             cls_pred_list.append(cls_pred)
             bbox_pred_list.append(bbox_pred)
             mask_pred_list.append(mask_pred)
         else:
-            attn_mask = None
+            cross_attn_mask = None
 
         ignore_masked_attention_layers = self.decoder_cfg.get(
             'ignore_masked_attention_layers', [])
@@ -401,29 +459,54 @@ class PSGMask2FormerHead(PSGMaskFormerHead):
         for i in range(self.num_transformer_decoder_layers):
             level_idx = i % self.num_transformer_feat_level
             # if a mask is all True(all background), then set it all False.
-            if attn_mask is not None:
-                attn_mask[torch.where(
-                    attn_mask.sum(-1) == attn_mask.shape[-1])] = False
+            if cross_attn_mask is not None:
+                cross_attn_mask[torch.where(
+                    cross_attn_mask.sum(-1) == cross_attn_mask.shape[-1])] = False
 
             # cross_attn + self_attn
             layer = self.transformer_decoder.layers[i]
+            # cross_attn_mask is prepared for cross attention
+            # if we use relation_query, then we need setup another self_attn_mask
+            # for self attention, to decide whether interact triplet query
+            # with relation query.
             if i in ignore_masked_attention_layers:
-                attn_masks = None
+                cross_attn_mask = None
+            if self.use_relation_query and \
+                    self.use_decoder_for_relation_query and \
+                    self.mask_self_attn_interact_of_diff_query_types:
+                self_attn_mask = cross_attn_mask.new_zeros(
+                    (cross_attn_mask.shape[0], cross_attn_mask.shape[1], cross_attn_mask.shape[1])).bool()
+                # the interact area of triplet query and relation query are masked.
+                self_attn_mask[:, self.num_queries:, :self.num_queries] = True
+                self_attn_mask[:, :self.num_queries, self.num_queries:] = True
             else:
-                attn_masks = [attn_mask, None]
-            query_feat = layer(
-                query=query_feat,
+                self_attn_mask = None
+            attn_masks = [cross_attn_mask, self_attn_mask]
+            all_query_feat = layer(
+                query=all_query_feat,
                 key=decoder_inputs[level_idx],
                 value=decoder_inputs[level_idx],
-                query_pos=query_embed,
+                query_pos=all_query_embed,
                 key_pos=decoder_positional_encodings[level_idx],
                 attn_masks=attn_masks,
                 query_key_padding_mask=None,
                 # here we do not apply masking on padded region
                 key_padding_mask=None)
 
-            cls_pred, bbox_pred, mask_pred, attn_mask = self.forward_head(
-                query_feat, mask_features, multi_scale_memorys[
+            if self.use_relation_query:
+                if self.use_decoder_for_relation_query:
+                    query_feat, relation_query_feat = torch.split(
+                        all_query_feat,
+                        split_size_or_sections=[
+                            self.num_queries, self.num_relations+1],
+                        dim=0)
+                else:
+                    query_feat = all_query_feat
+            else:
+                query_feat = all_query_feat
+
+            cls_pred, bbox_pred, mask_pred, cross_attn_mask = self.forward_head(
+                query_feat, relation_query_feat, mask_features, multi_scale_memorys[
                     (i + 1) % self.num_transformer_feat_level].shape[-2:], decoder_layer_idx=i+1)
             cls_pred_list.append(cls_pred)
             bbox_pred_list.append(bbox_pred)
