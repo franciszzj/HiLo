@@ -40,6 +40,7 @@ class PSGMask2FormerHead(PSGMaskFormerHead):
                  bg_cls_weight=0.02,
                  use_mask=True,
                  use_relation_query=False,
+                 use_mlp_before_dot_product=False,
                  use_decoder_for_relation_query=True,
                  mask_self_attn_interact_of_diff_query_types=True,
                  pixel_decoder=None,
@@ -85,6 +86,7 @@ class PSGMask2FormerHead(PSGMaskFormerHead):
         self.bg_cls_weight = bg_cls_weight
         self.use_mask = use_mask
         self.use_relation_query = use_relation_query
+        self.use_mlp_before_dot_product = use_mlp_before_dot_product
         self.use_decoder_for_relation_query = use_decoder_for_relation_query
         self.mask_self_attn_interact_of_diff_query_types = mask_self_attn_interact_of_diff_query_types
         self.decoder_cfg = decoder_cfg
@@ -149,7 +151,13 @@ class PSGMask2FormerHead(PSGMaskFormerHead):
             self.decoder_embed_dims, self.obj_cls_out_channels)
         self.obj_box_embed = MLP(
             self.decoder_embed_dims, self.decoder_embed_dims, 4, 3)
-        if not self.use_relation_query:
+        if self.use_relation_query:
+            if self.use_mlp_before_dot_product:
+                self.object_query_mlp = MLP(
+                    self.decoder_embed_dims, self.decoder_embed_dims, self.decoder_embed_dims, 3)
+                self.relation_query_mlp = MLP(
+                    self.decoder_embed_dims, self.decoder_embed_dims, self.decoder_embed_dims, 3)
+        else:
             self.rel_cls_embed = Linear(
                 self.decoder_embed_dims, self.rel_cls_out_channels)
         self.sub_mask_embed = nn.Sequential(
@@ -306,8 +314,15 @@ class PSGMask2FormerHead(PSGMaskFormerHead):
         sub_output_class = self.sub_cls_embed(decoder_out)
         obj_output_class = self.obj_cls_embed(decoder_out)
         if self.use_relation_query:
-            rel_output_class = torch.einsum(
-                'bqc,brc->bqr', decoder_out, relation_decoder_out)
+            if self.use_mlp_before_dot_product:
+                _decoder_out = self.object_query_mlp(decoder_out)
+                _relation_decoder_out = self.relation_query_mlp(
+                    relation_decoder_out)
+                rel_output_class = torch.einsum(
+                    'bqc,brc->bqr', _decoder_out, _relation_decoder_out)
+            else:
+                rel_output_class = torch.einsum(
+                    'bqc,brc->bqr', decoder_out, relation_decoder_out)
         else:
             rel_output_class = self.rel_cls_embed(decoder_out)
         all_cls_score = dict(sub=sub_output_class,
