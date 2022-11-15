@@ -73,6 +73,7 @@ data = dict(
         pipeline=train_pipeline,
         split='train',
         all_bboxes=True,
+        overlap_rel_choice_type='random',
     ),
     val=dict(
         type=dataset_type,

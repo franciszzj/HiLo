@@ -32,6 +32,8 @@ class PanopticSceneGraphDataset(CocoPanopticDataset):
             # New args
             split: str = 'train',  # {"train", "test"}
             all_bboxes: bool = False,  # load all bboxes (thing, stuff) for SG
+            # {'random', 'low2high', 'high2low'}
+            overlap_rel_choice_type: str = 'random',
     ):
         self.ann_file = ann_file
         self.data_root = data_root
@@ -41,6 +43,7 @@ class PanopticSceneGraphDataset(CocoPanopticDataset):
         self.test_mode = test_mode
         self.filter_empty_gt = filter_empty_gt
         self.file_client = mmcv.FileClient(**file_client_args)
+        self.overlap_rel_choice_type = overlap_rel_choice_type
 
         # join paths if data_root is specified
         if self.data_root is not None:
@@ -64,6 +67,11 @@ class PanopticSceneGraphDataset(CocoPanopticDataset):
         # Load dataset
         dataset = mmcv.load(ann_file)
 
+        # Relation to frequency dict
+        self.rel2freq = dict()
+        for i, _ in enumerate(dataset['predicate_classes']):
+            self.rel2freq[i+1] = 0
+
         for d in dataset['data']:
             # NOTE: 0-index for object class labels
             # for s in d['segments_info']:
@@ -75,6 +83,7 @@ class PanopticSceneGraphDataset(CocoPanopticDataset):
             # NOTE: 1-index for predicate class labels
             for r in d['relations']:
                 r[2] += 1
+                self.rel2freq[r[2]] += 1
 
         # NOTE: Filter out images with zero relations
         dataset['data'] = [
@@ -236,8 +245,17 @@ class PanopticSceneGraphDataset(CocoPanopticDataset):
             all_rel_sets = defaultdict(list)
             for (o0, o1, r) in gt_rels:
                 all_rel_sets[(o0, o1)].append(r)
-            gt_rels = [(k[0], k[1], np.random.choice(v))
-                       for k, v in all_rel_sets.items()]
+            gt_rels = []
+            for k, v in all_rel_sets.items():
+                if (len(v) == 1) or self.overlap_rel_choice_type == 'random':
+                    v_final = np.random.choice(v)
+                elif self.overlap_rel_choice_type == 'low2high':
+                    v_idx = np.argmax([self.rel2freq[i] for i in v])
+                    v_final = v[v_idx]
+                elif self.overlap_rel_choice_type == 'high2low':
+                    v_idx = np.argmin([self.rel2freq[i] for i in v])
+                    v_final = v[v_idx]
+                gt_rels.append((k[0], k[1], v_final))
             gt_rels = np.array(gt_rels, dtype=np.int32)
         else:
             # for test or val set, filter the duplicate triplets,
