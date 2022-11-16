@@ -229,12 +229,12 @@ lr_config = dict(
     policy='step',
     gamma=0.1,
     by_epoch=True,
-    step=[40],
+    step=[1],
     warmup='linear',
     warmup_by_epoch=False,
     warmup_ratio=1.0,
     warmup_iters=10)
-runner = dict(type='EpochBasedRunner', max_epochs=60)
+runner = dict(type='EpochBasedRunner', max_epochs=1)
 
 project_name = 'psgmask2former'
 expt_name = 'psgmask2former_r50'
