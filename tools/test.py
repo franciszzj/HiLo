@@ -4,6 +4,7 @@ import os
 import os.path as osp
 import time
 import warnings
+import pprint
 
 import mmcv
 import torch
@@ -18,6 +19,7 @@ from mmdet.datasets import build_dataloader, replace_ImageToTensor
 from mmdet.models import build_detector
 
 from openpsg.datasets import build_dataset
+from openpsg.models.relation_heads.approaches import Result
 from grade import save_results
 
 
@@ -217,6 +219,7 @@ def main():
             broadcast_buffers=False)
         outputs = multi_gpu_test(model, data_loader, args.tmpdir,
                                  args.gpu_collect)
+
     if args.submit:
         save_results(outputs)
 
@@ -231,45 +234,109 @@ def main():
         if args.eval:
             eval_kwargs = cfg.get('evaluation', {}).copy()
             # hard-code way to remove EvalHook args
-            for key in [
-                    'interval', 'tmpdir', 'start', 'gpu_collect', 'save_best',
-                    'rule', 'dynamic_intervals'
-            ]:
+            for key in ['interval', 'tmpdir', 'start', 'gpu_collect', 'save_best',
+                        'rule', 'dynamic_intervals']:
                 eval_kwargs.pop(key, None)
-            eval_kwargs.update(dict(metric=args.eval, **kwargs))
-            metric = dataset.evaluate(outputs, **eval_kwargs)
-            print(metric)
-            metric_dict = dict(config=args.config, metric=metric)
-            if args.work_dir is not None and rank == 0:
-                mmcv.dump(metric_dict, json_file)
-            eval_kwargs['metric'] = 'sgdet'
-            metric_sgdet = dataset.evaluate(outputs, **eval_kwargs)
-            eval_kwargs['metric'] = 'PQ'
-            metric_pq = dataset.evaluate(outputs, **eval_kwargs)
-            print('Recall R 20: {}\n'.format(
-                metric_sgdet['sgdet_recall_R_20']))
-            print('MeanRecall R 20: {}\n'.format(
-                metric_sgdet['sgdet_mean_recall_mR_20']))
-            print('PQ: {}\n'.format(0.01 * metric_pq['PQ']))
-            print('Inference Time: {}\n'.format(mean_duration))
-            if mean_duration <= 0.05:
-                time_score = 1.0
-            elif 0.05 < mean_duration <= 0.1:
-                time_score = 0.8
-            elif 0.1 < mean_duration <= 0.5:
-                time_score = 0.6
-            elif 0.5 < mean_duration <= 1.0:
-                time_score = 0.4
-            elif 1.0 < mean_duration <= 10.0:
-                time_score = 0.2
+
+            if args.eval[0] == 'sgdet_PQ':
+                eval_kwargs['metric'] = 'sgdet'
+                metric_sgdet = dataset.evaluate(outputs, **eval_kwargs)
+                eval_kwargs['metric'] = 'PQ'
+                metric_pq = dataset.evaluate(outputs, **eval_kwargs)
+                final_score = metric_sgdet['sgdet_recall_R_20'] * 0.3 + \
+                    metric_sgdet['sgdet_mean_recall_mR_20'] * 0.6 + \
+                    metric_pq['PQ'] * 0.01 * 0.1
+                metric_results = dict()
+                metric_results['sgdet_recall_R_20'] = metric_sgdet['sgdet_recall_R_20']
+                metric_results['sgdet_recall_R_50'] = metric_sgdet['sgdet_recall_R_50']
+                metric_results['sgdet_recall_R_100'] = metric_sgdet['sgdet_recall_R_100']
+                metric_results['sgdet_mean_recall_mR_20'] = metric_sgdet['sgdet_mean_recall_mR_20']
+                metric_results['sgdet_mean_recall_mR_50'] = metric_sgdet['sgdet_mean_recall_mR_50']
+                metric_results['sgdet_mean_recall_mR_100'] = metric_sgdet['sgdet_mean_recall_mR_100']
+                metric_results['PQ'] = metric_pq['PQ']
+                metric_results['final_score'] = final_score
             else:
-                time_score = 0.0
-            print('Final Score: {}\n'.format(
-                metric_sgdet['sgdet_recall_R_20'] * 0.25 +
-                metric_sgdet['sgdet_mean_recall_mR_20'] * 0.55 +
-                metric_pq['PQ'] * 0.01 * 0.1 +
-                time_score * 0.1
-            ))
+                eval_kwargs.update(dict(metric=args.eval, **kwargs))
+                metric = dataset.evaluate(outputs, **eval_kwargs)
+                metric_results = metric
+
+            pprint.pprint(metric_results)
+
+
+def merge_results(result1, result2):
+    assert isinstance(result1, Result)
+    assert isinstance(result2, Result)
+
+    # 1. parse result1
+    bboxes1 = result1.refine_bboxes
+    labels1 = result1.labels
+    rel_pairs1 = result1.rel_pair_idxes
+    rel_dists1 = result1.rel_dists
+    rel_labels1 = result1.rel_labels
+    masks1 = result1.masks
+    pan_seg1 = result1.pan_seg
+    num1 = rel_pairs1.shape[0]
+
+    # 2. parse result2
+    bboxes2 = result2.refine_bboxes
+    labels2 = result2.labels
+    rel_pairs2 = result2.rel_pair_idxes
+    # after merging, rel_pairs2 should be shifted with num1
+    rel_pairs2 += num1
+    rel_dists2 = result2.rel_dists
+    rel_labels2 = result2.rel_labels
+    masks2 = result2.masks
+    pan_seg2 = result2.pan_seg
+    num2 = rel_pairs2.shape[0]
+
+    # 3. re-arrange based on rel_scores, output rel_idxes
+    rel_scores1, _ = rel_dists1.max(-1)
+    rel_scores2, _ = rel_dists2.max(-1)
+    rel_scores_all = torch.cat((rel_scores1, rel_scores2), dim=0)
+    rel_scores, rel_idxes = torch.sort(rel_scores_all, dim=0)
+
+    # 4. reshape result to (n, ...)
+    bboxes1 = bboxes1.reshape((num1, 2, 5))
+    labels1 = labels1.reshape((num1, 2))
+    h, w = masks1.shape[-2:]
+    masks1 = masks1.reshape((num1, 2, h, w))
+
+    bboxes2 = bboxes2.reshape((num2, 2, 5))
+    labels2 = labels2.reshape((num2, 2))
+    h, w = masks2.shape[-2:]
+    masks2 = masks2.reshape((num2, 2, h, w))
+
+    # 5. cat result1 and result2
+    bboxes_all = torch.cat((bboxes1, bboxes2), dim=0)
+    labels_all = torch.cat((labels1, labels2), dim=0)
+    rel_pairs_all = torch.cat((rel_pairs1, rel_pairs2), dim=0)
+    rel_dists_all = torch.cat((rel_dists1, rel_dists2), dim=0)
+    rel_labels_all = torch.cat((rel_labels1, rel_labels2), dim=0)
+    masks_all = torch.cat((masks1, masks2), dim=0)
+
+    # 6. re-arrange based on rel_idxes
+    bboxes = bboxes_all[rel_idxes]
+    labels = labels_all[rel_idxes]
+    rel_pairs = rel_pairs_all[rel_idxes]
+    rel_dists = rel_dists_all[rel_idxes]
+    rel_labels = rel_labels_all[rel_idxes]
+    masks = masks_all[rel_idxes]
+
+    # 7. reshape bboxes, labels and masks to (n*2, ...)
+    bboxes = bboxes.reshape((-1, 5))
+    labels = labels.reshape((-1))
+    masks = masks.reshape((-1, h, w))
+
+    # 8. construct merge result
+    merge_result = Result(refine_bboxes=bboxes,
+                          labels=labels,
+                          formatted_masks=dict(pan_results=pan_seg1),
+                          rel_pair_idxes=rel_pairs,
+                          rel_dists=rel_dists,
+                          rel_labels=rel_labels,
+                          pan_results=pan_seg1,
+                          masks=masks)
+    return merge_result
 
 
 if __name__ == '__main__':

@@ -1,6 +1,7 @@
 # Copyright (c) OpenMMLab. All rights reserved.
 import warnings
 
+import os
 import mmcv
 import numpy as np
 import torch
@@ -13,7 +14,7 @@ from openpsg.models.relation_heads.approaches import Result
 from openpsg.utils.utils import adjust_text_color, draw_text, get_colormap
 
 
-def triplet2Result(triplets, use_mask, eval_pan_rels=True):
+def triplet2Result(triplets, use_mask, eval_pan_rels=os.getenv('EVAL_PAN_RELS', 'true').lower() == 'true'):
     if use_mask:
         bboxes, labels, rel_pairs, masks, pan_rel_pairs, pan_seg, complete_r_labels, complete_r_dists, \
             r_labels, r_dists, pan_masks, rels, pan_labels \
@@ -35,23 +36,24 @@ def triplet2Result(triplets, use_mask, eval_pan_rels=True):
             pan_labels = pan_labels.detach().cpu().numpy()
         if eval_pan_rels:
             return Result(refine_bboxes=bboxes,
-                        labels=pan_labels+1,
-                        formatted_masks=dict(pan_results=pan_seg),
-                        rel_pair_idxes=pan_rel_pairs,# elif not pan: rel_pairs,
-                        rel_dists=r_dists,
-                        rel_labels=r_labels,
-                        pan_results=pan_seg,
-                        masks=pan_masks,
-                        rels=rels)
+                          labels=pan_labels+1,
+                          formatted_masks=dict(pan_results=pan_seg),
+                          rel_pair_idxes=pan_rel_pairs,  # elif not pan: rel_pairs,
+                          rel_dists=r_dists,
+                          rel_labels=r_labels,
+                          pan_results=pan_seg,
+                          masks=pan_masks,
+                          rels=rels)
         else:
-            return Result(refine_bboxes=bboxes,
-                        labels=labels,
-                        formatted_masks=dict(pan_results=pan_seg),
-                        rel_pair_idxes=rel_pairs,
-                        rel_dists=complete_r_dists,
-                        rel_labels=complete_r_labels,
-                        pan_results=pan_seg,
-                        masks=masks)
+            return Result(refine_bboxes=bboxes,  # (2*n, 5)
+                          labels=labels,  # (2*n)
+                          formatted_masks=dict(
+                              pan_results=pan_seg),  # (h, w)
+                          rel_pair_idxes=rel_pairs,  # (n, 2)
+                          rel_dists=complete_r_dists,  # (n, 57)
+                          rel_labels=complete_r_labels,  # (n)
+                          pan_results=pan_seg,  # (h, w)
+                          masks=masks)  # (2*n, h, w)
     else:
         bboxes, labels, rel_pairs, r_labels, r_dists = triplets
         labels = labels.detach().cpu().numpy()
