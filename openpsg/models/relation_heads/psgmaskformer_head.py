@@ -352,15 +352,18 @@ class PSGMaskFormerHead(AnchorFreeHead):
 
         cls_reg_targets = self.get_targets(
             s_cls_scores_list, o_cls_scores_list, r_cls_scores_list,
-            s_bbox_preds_list, o_bbox_preds_list, s_mask_preds_list,
-            o_mask_preds_list, gt_rels_list, gt_bboxes_list, gt_labels_list,
+            s_bbox_preds_list, o_bbox_preds_list,
+            s_mask_preds_list, o_mask_preds_list,
+            gt_rels_list, gt_bboxes_list, gt_labels_list,
             gt_masks_list, img_metas, gt_bboxes_ignore_list)
 
-        (s_labels_list, o_labels_list, r_labels_list, s_label_weights_list,
-         o_label_weights_list, r_label_weights_list, s_bbox_targets_list,
-         o_bbox_targets_list, s_bbox_weights_list, o_bbox_weights_list,
-         s_mask_targets_list, o_mask_targets_list, num_total_pos,
-         num_total_neg, s_mask_preds_list, o_mask_preds_list) = cls_reg_targets
+        (s_labels_list, o_labels_list, r_labels_list,
+         s_label_weights_list, o_label_weights_list, r_label_weights_list,
+         s_bbox_targets_list, o_bbox_targets_list,
+         s_bbox_weights_list, o_bbox_weights_list,
+         s_mask_targets_list, o_mask_targets_list,
+         num_total_pos, num_total_neg,
+         s_mask_preds_list, o_mask_preds_list) = cls_reg_targets
         s_labels = torch.cat(s_labels_list, 0)
         o_labels = torch.cat(o_labels_list, 0)
         r_labels = torch.cat(r_labels_list, 0)
@@ -504,23 +507,27 @@ class PSGMaskFormerHead(AnchorFreeHead):
             gt_bboxes_ignore_list for _ in range(num_imgs)
         ]
 
-        (s_labels_list, o_labels_list, r_labels_list, s_label_weights_list,
-         o_label_weights_list, r_label_weights_list, s_bbox_targets_list,
-         o_bbox_targets_list, s_bbox_weights_list, o_bbox_weights_list,
-         s_mask_targets_list, o_mask_targets_list, pos_inds_list,
-         neg_inds_list, s_mask_preds_list, o_mask_preds_list) = multi_apply(
-             self._get_target_single, s_cls_scores_list, o_cls_scores_list,
-             r_cls_scores_list, s_bbox_preds_list, o_bbox_preds_list,
-             s_mask_preds_list, o_mask_preds_list, gt_rels_list,
-             gt_bboxes_list, gt_labels_list, gt_masks_list, img_metas,
-             gt_bboxes_ignore_list)
+        (s_labels_list, o_labels_list, r_labels_list,
+         s_label_weights_list, o_label_weights_list, r_label_weights_list,
+         s_bbox_targets_list, o_bbox_targets_list,
+         s_bbox_weights_list, o_bbox_weights_list,
+         s_mask_targets_list, o_mask_targets_list,
+         pos_inds_list, neg_inds_list,
+         s_mask_preds_list, o_mask_preds_list) = multi_apply(
+             self._get_target_single,
+             s_cls_scores_list, o_cls_scores_list, r_cls_scores_list,
+             s_bbox_preds_list, o_bbox_preds_list,
+             s_mask_preds_list, o_mask_preds_list,
+             gt_rels_list, gt_bboxes_list, gt_labels_list, gt_masks_list,
+             img_metas, gt_bboxes_ignore_list)
         num_total_pos = sum((inds.numel() for inds in pos_inds_list))
         num_total_neg = sum((inds.numel() for inds in neg_inds_list))
         return (s_labels_list, o_labels_list, r_labels_list,
-                s_label_weights_list, o_label_weights_list,
-                r_label_weights_list, s_bbox_targets_list, o_bbox_targets_list,
-                s_bbox_weights_list, o_bbox_weights_list, s_mask_targets_list,
-                o_mask_targets_list, num_total_pos, num_total_neg,
+                s_label_weights_list, o_label_weights_list, r_label_weights_list,
+                s_bbox_targets_list, o_bbox_targets_list,
+                s_bbox_weights_list, o_bbox_weights_list,
+                s_mask_targets_list, o_mask_targets_list,
+                num_total_pos, num_total_neg,
                 s_mask_preds_list, o_mask_preds_list)
 
     def _get_target_single(self,
@@ -738,10 +745,13 @@ class PSGMaskFormerHead(AnchorFreeHead):
             pos_gt_o_bboxes_normalized)
         o_bbox_targets[pos_inds] = pos_gt_o_bboxes_targets
 
-        return (s_labels, o_labels, r_labels, s_label_weights, o_label_weights,
-                r_label_weights, s_bbox_targets, o_bbox_targets,
-                s_bbox_weights, o_bbox_weights, s_mask_targets, o_mask_targets,
-                pos_inds, neg_inds, s_mask_preds, o_mask_preds
+        return (s_labels, o_labels, r_labels,
+                s_label_weights, o_label_weights, r_label_weights,
+                s_bbox_targets, o_bbox_targets,
+                s_bbox_weights, o_bbox_weights,
+                s_mask_targets, o_mask_targets,
+                pos_inds, neg_inds,
+                s_mask_preds, o_mask_preds
                 )  # return the interpolated predicted masks
 
     def forward(self, feats, img_metas):
