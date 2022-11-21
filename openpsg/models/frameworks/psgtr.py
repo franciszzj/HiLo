@@ -16,15 +16,17 @@ from openpsg.utils.utils import adjust_text_color, draw_text, get_colormap
 
 def triplet2Result(triplets, use_mask, eval_pan_rels=os.getenv('EVAL_PAN_RELS', 'true').lower() == 'true'):
     if use_mask:
-        bboxes, labels, rel_pairs, masks, pan_rel_pairs, pan_seg, complete_r_labels, complete_r_dists, \
-            r_labels, r_dists, pan_masks, rels, pan_labels \
+        bboxes, labels, rel_pairs, masks, pan_rel_pairs, pan_seg, complete_r_scores, complete_r_labels, complete_r_dists, \
+            r_scores, r_labels, r_dists, pan_masks, rels, pan_labels \
             = triplets
         if isinstance(bboxes, torch.Tensor):
             labels = labels.detach().cpu().numpy()
             bboxes = bboxes.detach().cpu().numpy()
             rel_pairs = rel_pairs.detach().cpu().numpy()
+            complete_r_scores = complete_r_scores.detach().cpu().numpy()
             complete_r_labels = complete_r_labels.detach().cpu().numpy()
             complete_r_dists = complete_r_dists.detach().cpu().numpy()
+            r_scores = r_scores.detach().cpu().numpy()
             r_labels = r_labels.detach().cpu().numpy()
             r_dists = r_dists.detach().cpu().numpy()
         if isinstance(pan_seg, torch.Tensor):
@@ -41,6 +43,7 @@ def triplet2Result(triplets, use_mask, eval_pan_rels=os.getenv('EVAL_PAN_RELS', 
                           rel_pair_idxes=pan_rel_pairs,  # elif not pan: rel_pairs,
                           rel_dists=r_dists,
                           rel_labels=r_labels,
+                          rel_scores=r_scores,
                           pan_results=pan_seg,
                           masks=pan_masks,
                           rels=rels)
@@ -52,6 +55,7 @@ def triplet2Result(triplets, use_mask, eval_pan_rels=os.getenv('EVAL_PAN_RELS', 
                           rel_pair_idxes=rel_pairs,  # (n, 2)
                           rel_dists=complete_r_dists,  # (n, 57)
                           rel_labels=complete_r_labels,  # (n)
+                          rel_scores=complete_r_scores,  # (n)
                           pan_results=pan_seg,  # (h, w)
                           masks=masks)  # (2*n, h, w)
     else:

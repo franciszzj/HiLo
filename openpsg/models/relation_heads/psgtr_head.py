@@ -1033,6 +1033,7 @@ class PSGTrHead(AnchorFreeHead):
             r_dists = r_dists[keep_tri]
             rel_pairs = torch.arange(keep_tri.sum()*2,
                                      dtype=torch.int).reshape(2, -1).T
+            complete_r_scores = r_scores
             complete_r_labels = r_labels
             complete_r_dists = r_dists
 
@@ -1209,7 +1210,7 @@ class PSGTrHead(AnchorFreeHead):
 
         if self.use_mask:
             return det_bboxes, complete_labels, rel_pairs, output_masks, pan_rel_pairs, \
-                pan_img, complete_r_labels, complete_r_dists, r_labels, r_dists, pan_masks, rels, pan_labels
+                pan_img, complete_r_scores, complete_r_labels, complete_r_dists, r_scores, r_labels, r_dists, pan_masks, rels, pan_labels
         else:
             return det_bboxes, labels, rel_pairs, r_labels, r_dists
 

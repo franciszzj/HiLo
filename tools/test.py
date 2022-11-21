@@ -1,10 +1,13 @@
 # Copyright (c) OpenMMLab. All rights reserved.
+from collections import defaultdict
 import argparse
 import os
 import os.path as osp
 import time
 import warnings
 import pprint
+import copy
+import numpy as np
 
 import mmcv
 import torch
@@ -263,7 +266,48 @@ def main():
             pprint.pprint(metric_results)
 
 
+def dedup_triplets_based_on_iou(sub_labels, obj_labels, rel_labels, sub_masks, obj_masks):
+    relation_classes = defaultdict(lambda: [])
+    for k, (s_l, o_l, r_l) in enumerate(zip(sub_labels, obj_labels, rel_labels)):
+        relation_classes[(s_l, o_l, r_l)].append(k)
+    h, w = sub_masks.shape[-2:]
+    flatten_sub_masks = sub_masks.reshape((-1, h*w))
+    flatten_obj_masks = obj_masks.reshape((-1, h*w))
+
+    def _dedup_triplets(triplets_ids, sub_masks, obj_masks, keep_tri):
+        while len(triplets_ids) > 1:
+            base_s_mask = sub_masks[triplets_ids[0:1]]
+            base_o_mask = obj_masks[triplets_ids[0:1]]
+            other_s_mask = sub_masks[triplets_ids[1:]]
+            other_o_mask = obj_masks[triplets_ids[1:]]
+            # calculate ious
+            s_ious = np.matmul(base_s_mask.astype(np.int64), other_s_mask.transpose(
+                1, 0).astype(np.int64)) / ((base_s_mask+other_s_mask) > 0).sum(-1)
+            o_ious = np.matmul(base_o_mask.astype(np.int64), other_o_mask.transpose(
+                1, 0).astype(np.int64)) / ((base_o_mask+other_o_mask) > 0).sum(-1)
+            ids_left = []
+            for s_iou, o_iou, other_id in zip(s_ious[0], o_ious[0], triplets_ids[1:]):
+                if (s_iou > 0.99999) & (o_iou > 0.99999):
+                    keep_tri[other_id] = False
+                else:
+                    ids_left.append(other_id)
+            triplets_ids = ids_left
+        return keep_tri
+
+    keep_tri = np.ones_like(rel_labels)
+    for triplets_ids in relation_classes.values():
+        if len(triplets_ids) > 1:
+            keep_tri = _dedup_triplets(
+                triplets_ids, flatten_sub_masks, flatten_obj_masks, keep_tri)
+    return keep_tri
+
+
 def merge_results(result1, result2):
+    # when eval_pan_rels is true, it is more complicated to merge two results.
+    # because we should merge two pan_seg into one.
+    assert os.getenv('EVAL_PAN_RELS', 'true').lower() != 'true'
+    result1 = copy.deepcopy(result1)
+    result2 = copy.deepcopy(result2)
     assert isinstance(result1, Result)
     assert isinstance(result2, Result)
 
@@ -273,8 +317,9 @@ def merge_results(result1, result2):
     rel_pairs1 = result1.rel_pair_idxes
     rel_dists1 = result1.rel_dists
     rel_labels1 = result1.rel_labels
+    rel_scores1 = result1.rel_scores
     masks1 = result1.masks
-    pan_seg1 = result1.pan_seg
+    pan_seg1 = result1.pan_results
     num1 = rel_pairs1.shape[0]
 
     # 2. parse result2
@@ -285,15 +330,14 @@ def merge_results(result1, result2):
     rel_pairs2 += num1
     rel_dists2 = result2.rel_dists
     rel_labels2 = result2.rel_labels
+    rel_scores2 = result2.rel_scores
     masks2 = result2.masks
-    pan_seg2 = result2.pan_seg
+    pan_seg2 = result2.pan_results
     num2 = rel_pairs2.shape[0]
 
     # 3. re-arrange based on rel_scores, output rel_idxes
-    rel_scores1, _ = rel_dists1.max(-1)
-    rel_scores2, _ = rel_dists2.max(-1)
-    rel_scores_all = torch.cat((rel_scores1, rel_scores2), dim=0)
-    rel_scores, rel_idxes = torch.sort(rel_scores_all, dim=0)
+    rel_scores_all = np.concatenate((rel_scores1, rel_scores2), axis=0)
+    rel_idxes = np.argsort(rel_scores_all, axis=0)[::-1]
 
     # 4. reshape result to (n, ...)
     bboxes1 = bboxes1.reshape((num1, 2, 5))
@@ -306,34 +350,47 @@ def merge_results(result1, result2):
     h, w = masks2.shape[-2:]
     masks2 = masks2.reshape((num2, 2, h, w))
 
-    # 5. cat result1 and result2
-    bboxes_all = torch.cat((bboxes1, bboxes2), dim=0)
-    labels_all = torch.cat((labels1, labels2), dim=0)
-    rel_pairs_all = torch.cat((rel_pairs1, rel_pairs2), dim=0)
-    rel_dists_all = torch.cat((rel_dists1, rel_dists2), dim=0)
-    rel_labels_all = torch.cat((rel_labels1, rel_labels2), dim=0)
-    masks_all = torch.cat((masks1, masks2), dim=0)
+    # 5. concatenate result1 and result2
+    bboxes_all = np.concatenate((bboxes1, bboxes2), axis=0)
+    labels_all = np.concatenate((labels1, labels2), axis=0)
+    rel_dists_all = np.concatenate((rel_dists1, rel_dists2), axis=0)
+    rel_labels_all = np.concatenate((rel_labels1, rel_labels2), axis=0)
+    masks_all = np.concatenate((masks1, masks2), axis=0)
 
     # 6. re-arrange based on rel_idxes
     bboxes = bboxes_all[rel_idxes]
     labels = labels_all[rel_idxes]
-    rel_pairs = rel_pairs_all[rel_idxes]
     rel_dists = rel_dists_all[rel_idxes]
     rel_labels = rel_labels_all[rel_idxes]
+    rel_scores = rel_scores_all[rel_idxes]
     masks = masks_all[rel_idxes]
 
-    # 7. reshape bboxes, labels and masks to (n*2, ...)
+    # 7. dedup
+    keep_tri = dedup_triplets_based_on_iou(
+        labels[:, 0], labels[:, 1], rel_labels, masks[:, 0], masks[:, 1])
+    rel_pairs = np.array([i for i in range(keep_tri.sum()*2)],
+                         dtype=np.int64).reshape(2, -1).T
+    keep_tri = keep_tri.astype(np.bool8)
+    bboxes = bboxes[keep_tri]
+    labels = labels[keep_tri]
+    rel_dists = rel_dists[keep_tri]
+    rel_labels = rel_labels[keep_tri]
+    rel_scores = rel_scores[keep_tri]
+    masks = masks[keep_tri]
+
+    # 8. reshape bboxes, labels and masks to (n*2, ...)
     bboxes = bboxes.reshape((-1, 5))
     labels = labels.reshape((-1))
     masks = masks.reshape((-1, h, w))
 
-    # 8. construct merge result
+    # 9. construct merge result
     merge_result = Result(refine_bboxes=bboxes,
                           labels=labels,
                           formatted_masks=dict(pan_results=pan_seg1),
                           rel_pair_idxes=rel_pairs,
                           rel_dists=rel_dists,
                           rel_labels=rel_labels,
+                          rel_scores=rel_scores,
                           pan_results=pan_seg1,
                           masks=masks)
     return merge_result
