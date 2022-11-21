@@ -190,8 +190,8 @@ evaluation = dict(
     detection_method='pan_seg',
 )
 
-data = dict(samples_per_gpu=2,
-            workers_per_gpu=1,
+data = dict(samples_per_gpu=1,
+            workers_per_gpu=2,
             train=dict(pipeline=train_pipeline),
             val=dict(pipeline=test_pipeline),
             test=dict(pipeline=test_pipeline))
@@ -219,14 +219,14 @@ log_config = dict(
     hooks=[
         dict(type='TextLoggerHook'),
         # dict(type='TensorboardLoggerHook'),
-        dict(
-            type='WandbLoggerHook',
-            init_kwargs=dict(
-                project=project_name,
-                name=expt_name,
-                # config=work_dir + "/cfg.yaml"
-            ),
-        )
+        # dict(
+        #     type='WandbLoggerHook',
+        #     init_kwargs=dict(
+        #         project=project_name,
+        #         name=expt_name,
+        #         # config=work_dir + "/cfg.yaml"
+        #     ),
+        # )
     ],
 )
 
