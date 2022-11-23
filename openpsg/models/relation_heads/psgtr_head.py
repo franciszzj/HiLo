@@ -791,7 +791,7 @@ class PSGTrHead(AnchorFreeHead):
                 pos_inds, neg_inds, s_mask_preds, o_mask_preds
                 )  # return the interpolated predicted masks
 
-    def forward(self, feats, img_metas):
+    def forward(self, feats, img_metas, **kwargs):
         # 1. Forward
         # construct binary masks which used for the transformer.
         # NOTE following the official DETR repo, non-zero values representing
@@ -1214,11 +1214,11 @@ class PSGTrHead(AnchorFreeHead):
         else:
             return det_bboxes, labels, rel_pairs, r_labels, r_dists
 
-    def simple_test_bboxes(self, feats, img_metas, rescale=False):
+    def simple_test_bboxes(self, feats, img_metas, rescale=False, **kwargs):
 
         # forward of this head requires img_metas
         # start = time.time()
-        outs = self.forward(feats, img_metas)
+        outs = self.forward(feats, img_metas, **kwargs)
         # forward_time =time.time()
         # print('------forward-----')
         # print(forward_time - start)

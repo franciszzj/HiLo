@@ -25,6 +25,11 @@ from openpsg.datasets import build_dataset
 from openpsg.models.relation_heads.approaches import Result
 from grade import save_results
 
+if (os.getenv('SAVE_PREDICT', 'false').lower() == 'true') or \
+        (os.getenv('MERGE_PREDICT', 'false').lower() == 'true'):
+    from mmdet.core import encode_mask_results
+    from mmcv.parallel import DataContainer as DC
+
 
 def parse_args():
     parser = argparse.ArgumentParser(
@@ -188,7 +193,9 @@ def main():
                                    shuffle=False)
 
     # build the model and load checkpoint
-    cfg.model.train_cfg = None
+    if not (os.getenv('SAVE_PREDICT', 'false').lower() == 'true') and \
+            not (os.getenv('MERGE_PREDICT', 'false').lower() == 'true'):
+        cfg.model.train_cfg = None
     model = build_detector(cfg.model, test_cfg=cfg.get('test_cfg'))
     fp16_cfg = cfg.get('fp16', None)
     if fp16_cfg is not None:
@@ -211,6 +218,32 @@ def main():
         start_time = time.time()
         outputs = single_gpu_test(model, data_loader, args.show, args.show_dir,
                                   args.show_score_thr)
+        '''
+        # ##### code to test, add labels to test process.
+        model.eval()
+        outputs = []
+        for i, data in enumerate(data_loader):
+            print(i)
+            with torch.no_grad():
+                device = data['gt_labels'][0].data[0][0].device
+                gt_masks = data['gt_masks'][0].data[0][0].to_tensor(
+                    torch.uint8, device)
+                data['gt_masks'] = [DC([[gt_masks]])]
+                result = model(return_loss=False, rescale=True, **data)
+            # encode mask results
+            if isinstance(result[0], tuple):
+                result = [(bbox_results, encode_mask_results(mask_results))
+                          for bbox_results, mask_results in result]
+            # This logic is only used in panoptic segmentation test.
+            elif isinstance(result[0], dict) and 'ins_results' in result[0]:
+                for j in range(len(result)):
+                    bbox_results, mask_results = result[j]['ins_results']
+                    result[j]['ins_results'] = (bbox_results,
+                                                encode_mask_results(mask_results))
+            outputs.extend(result)
+        # ##### code to test, add labels to test process.
+        '''
+
         duration = time.time() - start_time
         mean_duration = duration / len(data_loader)
         print('\n inference time:', flush=True)

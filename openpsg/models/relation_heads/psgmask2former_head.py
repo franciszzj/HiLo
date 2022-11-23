@@ -1,8 +1,11 @@
 # Copyright (c) OpenMMLab. All rights reserved.
 from collections import defaultdict
+import os
 import sys
 import cv2
 import copy
+import random
+import pickle
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -21,6 +24,11 @@ from mmdet.models.builder import HEADS, build_loss
 from mmdet.models.dense_heads import AnchorFreeHead
 from openpsg.models.relation_heads.psgmaskformer_head import PSGMaskFormerHead
 from openpsg.models.relation_heads.psgtr_head import MLP
+
+if (os.getenv('SAVE_PREDICT', 'false').lower() == 'true') or \
+        (os.getenv('MERGE_PREDICT', 'false').lower() == 'true'):
+    import dbm
+    kv_db = dbm.open('./db/kv_db', 'c')
 
 
 @HEADS.register_module()
@@ -403,7 +411,7 @@ class PSGMask2FormerHead(PSGMaskFormerHead):
 
         return all_cls_score, all_bbox_pred, all_mask_pred, all_attn_mask
 
-    def forward(self, feats, img_metas):
+    def forward(self, feats, img_metas, **kwargs):
         debug = False
         if debug:
             print('\n img_metas for this test image: {}'.format(img_metas))
@@ -566,5 +574,138 @@ class PSGMask2FormerHead(PSGMaskFormerHead):
         all_mask_preds = dict(
             sub=all_s_mask_preds,
             obj=all_o_mask_preds)
+
+        if os.getenv('SAVE_PREDICT', 'false').lower() == 'true':
+            for i, img_meta in enumerate(img_metas):
+                # config = 'v14_2_jade2_epoch_42'
+                config = 'v14_3_jade2_epoch_43'
+                key = config + '#' + img_metas[i]['filename']
+                value = {
+                    'all_cls_scores': dict(
+                        sub=all_s_cls_scores[-1:, i:(i+1)].cpu().detach().numpy(),  # noqa
+                        obj=all_o_cls_scores[-1:, i:(i+1)].cpu().detach().numpy(),  # noqa
+                        rel=all_r_cls_scores[-1:, i:(i+1)].cpu().detach().numpy()),  # noqa
+                    'all_bbox_preds': dict(
+                        sub=all_s_bbox_preds[-1:, i:(i+1)].cpu().detach().numpy(),  # noqa
+                        obj=all_o_bbox_preds[-1:, i:(i+1)].cpu().detach().numpy()),  # noqa
+                    'all_mask_preds': dict(
+                        sub=all_s_mask_preds[-1:, i:(i+1)].cpu().detach().numpy(),  # noqa
+                        obj=all_o_mask_preds[-1:, i:(i+1)].cpu().detach().numpy()),  # noqa
+                }
+                value = pickle.dumps(value, protocol=pickle.HIGHEST_PROTOCOL)
+                kv_db[key] = value
+
+        if os.getenv('MERGE_PREDICT', 'false').lower() == 'true':
+            value = {
+                'all_cls_scores': dict(
+                    sub=all_s_cls_scores[-1:, i:(i+1)].cpu().detach().numpy(),  # noqa
+                    obj=all_o_cls_scores[-1:, i:(i+1)].cpu().detach().numpy(),  # noqa
+                    rel=all_r_cls_scores[-1:, i:(i+1)].cpu().detach().numpy()),  # noqa
+                'all_bbox_preds': dict(
+                    sub=all_s_bbox_preds[-1:, i:(i+1)].cpu().detach().numpy(),  # noqa
+                    obj=all_o_bbox_preds[-1:, i:(i+1)].cpu().detach().numpy()),  # noqa
+                'all_mask_preds': dict(
+                    sub=all_s_mask_preds[-1:, i:(i+1)].cpu().detach().numpy(),  # noqa
+                    obj=all_o_mask_preds[-1:, i:(i+1)].cpu().detach().numpy()),  # noqa
+            }
+
+            config1 = 'v14_2_jade2_epoch_42'
+            key1 = config1 + '#' + img_metas[0]['filename']
+            value1 = kv_db.get(key1, value)
+            if isinstance(value1, (str, bytes)):
+                value1 = pickle.loads(value1)
+            else:
+                print('miss {}'.format(key1))
+
+            value1 = {
+                'all_cls_scores': dict(
+                    sub=torch.asarray(value1['all_cls_scores']['sub'], dtype=all_s_cls_scores.dtype, device=all_s_cls_scores.device),  # noqa
+                    obj=torch.asarray(value1['all_cls_scores']['obj'], dtype=all_o_cls_scores.dtype, device=all_o_cls_scores.device),  # noqa
+                    rel=torch.asarray(value1['all_cls_scores']['rel'], dtype=all_r_cls_scores.dtype, device=all_r_cls_scores.device),  # noqa
+                ),
+                'all_bbox_preds': dict(
+                    sub=torch.asarray(value1['all_bbox_preds']['sub'], dtype=all_s_bbox_preds.dtype, device=all_s_bbox_preds.device),  # noqa
+                    obj=torch.asarray(value1['all_bbox_preds']['obj'], dtype=all_o_bbox_preds.dtype, device=all_o_bbox_preds.device),  # noqa
+                ),
+                'all_mask_preds': dict(
+                    sub=torch.asarray(value1['all_mask_preds']['sub'], dtype=all_s_mask_preds.dtype, device=all_s_mask_preds.device),  # noqa
+                    obj=torch.asarray(value1['all_mask_preds']['obj'], dtype=all_o_mask_preds.dtype, device=all_o_mask_preds.device),  # noqa
+                ),
+            }
+
+            config2 = 'v14_3_jade2_epoch_43'
+            key2 = config2 + '#' + img_metas[0]['filename']
+            value2 = kv_db.get(key2, value)
+            if isinstance(value2, (str, bytes)):
+                value2 = pickle.loads(value2)
+            else:
+                print('miss {}'.format(key2))
+
+            value2 = {
+                'all_cls_scores': dict(
+                    sub=torch.asarray(value2['all_cls_scores']['sub'], dtype=all_s_cls_scores.dtype, device=all_s_cls_scores.device),  # noqa
+                    obj=torch.asarray(value2['all_cls_scores']['obj'], dtype=all_o_cls_scores.dtype, device=all_o_cls_scores.device),  # noqa
+                    rel=torch.asarray(value2['all_cls_scores']['rel'], dtype=all_r_cls_scores.dtype, device=all_r_cls_scores.device),  # noqa
+                ),
+                'all_bbox_preds': dict(
+                    sub=torch.asarray(value2['all_bbox_preds']['sub'], dtype=all_s_bbox_preds.dtype, device=all_s_bbox_preds.device),  # noqa
+                    obj=torch.asarray(value2['all_bbox_preds']['obj'], dtype=all_o_bbox_preds.dtype, device=all_o_bbox_preds.device),  # noqa
+                ),
+                'all_mask_preds': dict(
+                    sub=torch.asarray(value2['all_mask_preds']['sub'], dtype=all_s_mask_preds.dtype, device=all_s_mask_preds.device),  # noqa
+                    obj=torch.asarray(value2['all_mask_preds']['obj'], dtype=all_o_mask_preds.dtype, device=all_o_mask_preds.device),  # noqa
+                ),
+            }
+
+            pred1 = (value1['all_cls_scores'],
+                     value1['all_bbox_preds'], value1['all_mask_preds'])
+            pred2 = (value2['all_cls_scores'],
+                     value2['all_bbox_preds'], value2['all_mask_preds'])
+
+            gt_labels = kwargs['gt_labels'][0]
+            gt_bboxes = kwargs['gt_bboxes'][0]
+            gt_masks = kwargs['gt_masks'][0]
+            gt_rels = kwargs['gt_rels'][0]
+            gt_bboxes_ignore = None
+            gt = (gt_labels, gt_bboxes, gt_masks,
+                  gt_rels, img_metas, gt_bboxes_ignore)
+
+            input1 = pred1 + gt
+            input2 = pred2 + gt
+            loss1 = self.loss(*input1)
+            loss2 = self.loss(*input2)
+
+            loss1_value = sum([x.cpu().detach().item()
+                              for x in loss1.values()])
+            loss2_value = sum([x.cpu().detach().item()
+                              for x in loss2.values()])
+
+            if loss1_value < loss2_value:
+                w1 = 1.0
+                w2 = 0.0
+            else:
+                w1 = 0.0
+                w2 = 1.0
+
+            # if random.random() > 0.5:
+            #     w1 = 1.0
+            #     w2 = 0.0
+            # else:
+            #     w1 = 0.0
+            #     w2 = 1.0
+
+            all_cls_scores = dict(
+                sub=value1['all_cls_scores']['sub'] * w1 + value2['all_cls_scores']['sub'] * w2,  # noqa
+                obj=value1['all_cls_scores']['obj'] * w1 + value2['all_cls_scores']['obj'] * w2,  # noqa
+                rel=value1['all_cls_scores']['rel'] * w1 + value2['all_cls_scores']['rel'] * w2,  # noqa
+            )
+            all_bbox_preds = dict(
+                sub=value1['all_bbox_preds']['sub'] * w1 + value2['all_bbox_preds']['sub'] * w2,  # noqa
+                obj=value1['all_bbox_preds']['obj'] * w1 + value2['all_bbox_preds']['obj'] * w2,  # noqa
+            )
+            all_mask_preds = dict(
+                sub=value1['all_mask_preds']['sub'] * w1 + value2['all_mask_preds']['sub'] * w2,  # noqa
+                obj=value1['all_mask_preds']['obj'] * w1 + value2['all_mask_preds']['obj'] * w2,  # noqa
+            )
 
         return all_cls_scores, all_bbox_preds, all_mask_preds

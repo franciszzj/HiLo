@@ -754,7 +754,7 @@ class PSGMaskFormerHead(AnchorFreeHead):
                 s_mask_preds, o_mask_preds
                 )  # return the interpolated predicted masks
 
-    def forward(self, feats, img_metas):
+    def forward(self, feats, img_metas, **kwargs):
         # 1. Forward
         batch_size = len(img_metas)
         input_img_h, input_img_w = img_metas[0]['batch_input_shape']
@@ -1206,6 +1206,6 @@ class PSGMaskFormerHead(AnchorFreeHead):
             - mask_pred_results (Tensor): Mask logits, shape \
                 (batch_size, num_queries, h, w).
         """
-        outs = self(feats, img_metas)
+        outs = self(feats, img_metas, **kwargs)
         results_list = self.get_results(*outs, img_metas, rescale=rescale)
         return results_list

@@ -82,12 +82,13 @@ class PSGMaskFormer(SingleStageDetector):
                                               gt_bboxes_ignore)
         return losses
 
-    def simple_test(self, img, img_metas, rescale=False):
+    def simple_test(self, img, img_metas, rescale=False, **kwargs):
 
         feat = self.extract_feat(img)
         results_list = self.bbox_head.simple_test(feat,
                                                   img_metas,
-                                                  rescale=rescale)
+                                                  rescale=rescale,
+                                                  **kwargs)
         sg_results = [
             triplet2Result(triplets, self.bbox_head.use_mask)
             for triplets in results_list

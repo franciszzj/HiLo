@@ -253,7 +253,7 @@ class PSGFormerHead(AnchorFreeHead):
                                           strict, missing_keys,
                                           unexpected_keys, error_msgs)
 
-    def forward(self, feats, img_metas, train_mode=False):
+    def forward(self, feats, img_metas, train_mode=False, **kwargs):
 
         # construct binary masks which used for the transformer.
         # NOTE following the official DETR repo, non-zero values representing
@@ -1121,10 +1121,10 @@ class PSGFormerHead(AnchorFreeHead):
         else:
             return det_bboxes, labels, rel_pairs, r_scores, r_labels, r_dists
 
-    def simple_test_bboxes(self, feats, img_metas, rescale=False):
+    def simple_test_bboxes(self, feats, img_metas, rescale=False, **kwargs):
 
         # forward of this head requires img_metas
-        outs = self.forward(feats, img_metas)
+        outs = self.forward(feats, img_metas, **kwargs)
         results_list = self.get_bboxes(*outs, img_metas, rescale=rescale)
         return results_list
 
