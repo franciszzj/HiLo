@@ -9,11 +9,12 @@ from mmdet.datasets import PIPELINES
 
 @PIPELINES.register_module()
 class SaveIntermediateResults(object):
-    def __init__(self, save_json='', save_dir='', save_type='bbox', vis=False):
+    def __init__(self, save_json='', save_dir='', save_type='bbox', vis=False, merge_vis=True):
         self.save_json = save_json
         self.save_dir = save_dir
         self.save_type = save_type
         self.vis = vis
+        self.merge_vis = merge_vis
         self.fo = open(self.save_json, 'w')
 
         self.object_classes = [
@@ -109,9 +110,13 @@ class SaveIntermediateResults(object):
         gt_masks = results['gt_masks']
         img = results['img']
 
+        if self.vis and self.merge_vis:
+            h, w = img.shape[:2]
+            row_num = 5
+            col_num = 4
+            merge_vis_img = np.zeros((h * row_num, w * col_num, 3))
+
         for i in range(gt_rels.shape[0]):
-            if self.vis:
-                vis_img = copy.deepcopy(img)
             sub_id = gt_rels[i, 0]
             obj_id = gt_rels[i, 1]
             rel_class_id = gt_rels[i, 2] - 1
@@ -133,29 +138,53 @@ class SaveIntermediateResults(object):
             y2 = int(max(sub_bboxes[3], obj_bboxes[3]))
 
             if self.vis:
+                vis_img = copy.deepcopy(img)
+                # data prepare
                 sub_bboxes = sub_bboxes.astype(np.int32)
                 obj_bboxes = obj_bboxes.astype(np.int32)
-                vis_img = vis_img + ((masks - 1) * 255 * 0.5)[:, :, np.newaxis]
-                cv2.rectangle(vis_img, (sub_bboxes[0], sub_bboxes[1]), (
-                    sub_bboxes[2], sub_bboxes[3]), color=(255, 0, 0), thickness=3)
+                m_h, m_w = sub_masks.shape[-2:]
+                sub_masks = sub_masks.astype(np.int32)
+                obj_masks = obj_masks.astype(np.int32)
+                i1, i2 = np.where(sub_masks == 1)
+                sub_masks_template = np.zeros((m_h, m_w, vis_img.shape[-1]))
+                sub_masks_template[i1, i2] = sub_masks_template[i1, i2] + \
+                    np.array([255, 0, 0])
+                i1, i2 = np.where(obj_masks == 1)
+                obj_masks_template = np.zeros((m_h, m_w, vis_img.shape[-1]))
+                obj_masks_template[i1, i2] = obj_masks_template[i1, i2] + \
+                    np.array([0, 0, 255])
+                # mask
+                vis_img = vis_img + sub_masks_template * 0.5
+                vis_img = vis_img + obj_masks_template * 0.5
+                # subject
+                cv2.rectangle(vis_img, (sub_bboxes[0], sub_bboxes[1]), (sub_bboxes[2], sub_bboxes[3]),
+                              color=(255, 0, 0), thickness=3)
                 cv2.putText(vis_img, subject, (sub_bboxes[0], sub_bboxes[3]),
                             cv2.FONT_HERSHEY_PLAIN, 2, (255, 128, 0), thickness=2)
-                cv2.rectangle(vis_img, (obj_bboxes[0], obj_bboxes[1]), (
-                    obj_bboxes[2], obj_bboxes[3]), color=(0, 0, 255), thickness=3)
+                # object
+                cv2.rectangle(vis_img, (obj_bboxes[0], obj_bboxes[1]), (obj_bboxes[2], obj_bboxes[3]),
+                              color=(0, 0, 255), thickness=3)
                 cv2.putText(vis_img, object, (obj_bboxes[0], obj_bboxes[3]),
                             cv2.FONT_HERSHEY_PLAIN, 2, (0, 128, 255), thickness=2)
+                # relation
                 cv2.putText(vis_img, relation, ((sub_bboxes[0]+obj_bboxes[0])//2, (sub_bboxes[3]+obj_bboxes[3])//2),
                             cv2.FONT_HERSHEY_PLAIN, 2, (128, 255, 128), thickness=2)
-                cv2.rectangle(vis_img, (x1, y1), (x2, y2),
-                              color=(255, 0, 255), thickness=2, lineType=2)
-                vis_save_path = os.path.join(
-                    self.save_dir, 'vis', filename.replace(
-                        '.jpg', '_{}.jpg'.format(i))
-                )
-                vis_save_dir = '/'.join(vis_save_path.split('/')[:-1])
-                if not os.path.exists(vis_save_dir):
-                    os.makedirs(vis_save_dir)
-                cv2.imwrite(vis_save_path, vis_img)
+
+                if self.merge_vis:
+                    if i < 20:
+                        y_idx = i // col_num
+                        x_idx = i % col_num
+                        merge_vis_img[(h * y_idx):(h * (y_idx + 1)),
+                                      (w * x_idx):(w * (x_idx + 1))] = vis_img
+                else:
+                    vis_save_path = os.path.join(
+                        self.save_dir, 'vis', filename.replace(
+                            '.jpg', '_{}.jpg'.format(i))
+                    )
+                    vis_save_dir = '/'.join(vis_save_path.split('/')[:-1])
+                    if not os.path.exists(vis_save_dir):
+                        os.makedirs(vis_save_dir)
+                    cv2.imwrite(vis_save_path, vis_img)
 
             if self.save_type == 'bbox':
                 save_img = img[y1:y2, x1:x2]
@@ -189,5 +218,12 @@ class SaveIntermediateResults(object):
             }
             save_string = json.dumps(label_json) + '\n'
             self.fo.write(save_string)
+
+        if self.vis and self.merge_vis:
+            vis_save_path = os.path.join(self.save_dir, 'vis', filename)
+            vis_save_dir = '/'.join(vis_save_path.split('/')[:-1])
+            if not os.path.exists(vis_save_dir):
+                os.makedirs(vis_save_dir)
+            cv2.imwrite(vis_save_path, merge_vis_img)
 
         return results
