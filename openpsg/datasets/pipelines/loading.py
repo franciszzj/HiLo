@@ -18,10 +18,17 @@ except ImportError:
 @PIPELINES.register_module()
 class RelsFormatBundle(DefaultFormatBundle):
     """Transfer gt_rels to tensor too."""
+
     def __call__(self, results):
         results = super().__call__(results)
         if 'gt_rels' in results:
             results['gt_rels'] = DC(to_tensor(results['gt_rels']))
+        if 'high2low_gt_rels' in results:
+            results['high2low_gt_rels'] = DC(
+                to_tensor(results['high2low_gt_rels']))
+        if 'low2high_gt_rels' in results:
+            results['low2high_gt_rels'] = DC(
+                to_tensor(results['low2high_gt_rels']))
 
         return results
 
@@ -53,10 +60,18 @@ class LoadSceneGraphAnnotations(LoadAnnotations):
         ann_info = results['ann_info']
         results['gt_rels'] = ann_info['rels']
         results['gt_relmaps'] = ann_info['rel_maps']
+        if 'high2low_gt_rels' in ann_info:
+            results['high2low_gt_rels'] = ann_info['high2low_gt_rels']
+        if 'low2high_gt_rels' in ann_info:
+            results['low2high_gt_rels'] = ann_info['low2high_gt_rels']
 
         assert 'rel_fields' in results
 
         results['rel_fields'] += ['gt_rels', 'gt_relmaps']
+        if 'high2low_gt_rels' in ann_info:
+            results['rel_fields'] += ['high2low_gt_rels']
+        if 'low2high_gt_rels' in ann_info:
+            results['rel_fields'] += ['low2high_gt_rels']
         return results
 
     def __call__(self, results):
@@ -100,10 +115,18 @@ class LoadPanopticSceneGraphAnnotations(LoadPanopticAnnotations):
         ann_info = results['ann_info']
         results['gt_rels'] = ann_info['rels']
         results['gt_relmaps'] = ann_info['rel_maps']
+        if 'high2low_gt_rels' in ann_info:
+            results['high2low_gt_rels'] = ann_info['high2low_gt_rels']
+        if 'low2high_gt_rels' in ann_info:
+            results['low2high_gt_rels'] = ann_info['low2high_gt_rels']
 
         assert 'rel_fields' in results
 
         results['rel_fields'] += ['gt_rels', 'gt_relmaps']
+        if 'high2low_gt_rels' in ann_info:
+            results['rel_fields'] += ['high2low_gt_rels']
+        if 'low2high_gt_rels' in ann_info:
+            results['rel_fields'] += ['low2high_gt_rels']
         return results
 
     def _load_masks_and_semantic_segs(self, results):

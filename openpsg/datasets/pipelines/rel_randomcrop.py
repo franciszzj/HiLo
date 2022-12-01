@@ -8,6 +8,7 @@ from mmdet.datasets.pipelines import RandomCrop
 @PIPELINES.register_module()
 class RelRandomCrop(RandomCrop):
     """Random crop the image & bboxes & masks & scene relations."""
+
     def _crop_data(self, results, crop_size, allow_negative_crop):
         """Function to randomly crop images, bounding boxes, masks, semantic
         segmentation maps, relations.
@@ -63,6 +64,37 @@ class RelRandomCrop(RandomCrop):
                 if len(rels_left) == 0 and not allow_negative_crop:
                     return None
                 results['gt_rels'] = rels_left
+
+                if 'high2low_gt_rels' in results:
+                    high2low_rels_left = []
+                    for rel in results.get('high2low_gt_rels', []):
+                        if valid_inds[rel[0]] and valid_inds[rel[1]]:
+                            high2low_rels_left.append([
+                                sum(valid_inds[:rel[0]]),
+                                sum(valid_inds[:rel[1]]), rel[2]
+                            ])
+                    high2low_rels_left = np.array(high2low_rels_left)
+                    # If the crop does not contain any triplets and
+                    # allow_negative_crop is False, skip this image.
+                    if len(high2low_rels_left) == 0 and not allow_negative_crop:
+                        return None
+                    results['high2low_gt_rels'] = high2low_rels_left
+
+                if 'low2high_gt_rels' in results:
+                    low2high_rels_left = []
+                    for rel in results.get('low2high_gt_rels', []):
+                        if valid_inds[rel[0]] and valid_inds[rel[1]]:
+                            low2high_rels_left.append([
+                                sum(valid_inds[:rel[0]]),
+                                sum(valid_inds[:rel[1]]), rel[2]
+                            ])
+                    low2high_rels_left = np.array(low2high_rels_left)
+                    # If the crop does not contain any triplets and
+                    # allow_negative_crop is False, skip this image.
+                    if len(low2high_rels_left) == 0 and not allow_negative_crop:
+                        return None
+                    results['low2high_gt_rels'] = low2high_rels_left
+
             results[key] = bboxes[valid_inds, :]
             # label fields. e.g. gt_labels and gt_labels_ignore
             label_key = self.bbox2label.get(key)
