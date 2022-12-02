@@ -48,6 +48,7 @@ class PSGMask2FormerMultiDecoderHead(PSGMaskFormerHead):
                  transformer_decoder=None,
                  decoder_cfg=dict(use_query_pred=True,
                                   ignore_masked_attention_layers=[]),
+                 use_shared_query=False,
                  test_forward_output_type='high2low',
                  sub_loss_cls=dict(type='CrossEntropyLoss',
                                    use_sigmoid=False,
@@ -86,6 +87,7 @@ class PSGMask2FormerMultiDecoderHead(PSGMaskFormerHead):
         self.bg_cls_weight = bg_cls_weight
         self.use_mask = use_mask
         self.decoder_cfg = decoder_cfg
+        self.use_shared_query = use_shared_query
         self.test_forward_output_type = test_forward_output_type
         self.train_cfg = train_cfg
         self.test_cfg = test_cfg
@@ -120,14 +122,20 @@ class PSGMask2FormerMultiDecoderHead(PSGMaskFormerHead):
             else:
                 self.decoder_input_projs.append(nn.Identity())
         self.decoder_pe = build_positional_encoding(positional_encoding)
-        self.high2low_query_embed = nn.Embedding(
-            self.num_queries, out_channels)
-        self.high2low_query_feat = nn.Embedding(
-            self.num_queries, feat_channels)
-        self.low2high_query_embed = nn.Embedding(
-            self.num_queries, out_channels)
-        self.low2high_query_feat = nn.Embedding(
-            self.num_queries, feat_channels)
+        if self.use_shared_query:
+            self.query_embed = nn.Embedding(
+                self.num_queries, out_channels)
+            self.query_feat = nn.Embedding(
+                self.num_queries, feat_channels)
+        else:
+            self.high2low_query_embed = nn.Embedding(
+                self.num_queries, out_channels)
+            self.high2low_query_feat = nn.Embedding(
+                self.num_queries, feat_channels)
+            self.low2high_query_embed = nn.Embedding(
+                self.num_queries, out_channels)
+            self.low2high_query_feat = nn.Embedding(
+                self.num_queries, feat_channels)
         # from low resolution to high resolution
         self.level_embed = nn.Embedding(self.num_transformer_feat_level,
                                         feat_channels)
@@ -567,14 +575,24 @@ class PSGMask2FormerMultiDecoderHead(PSGMaskFormerHead):
             decoder_positional_encodings.append(decoder_positional_encoding)
         # shape (num_queries, c) -> (num_queries, batch_size, c)
 
-        high2low_query_feat = self.high2low_query_feat.weight.unsqueeze(1).repeat(
-            (1, batch_size, 1))
-        high2low_query_embed = self.high2low_query_embed.weight.unsqueeze(1).repeat(
-            (1, batch_size, 1))
-        low2high_query_feat = self.low2high_query_feat.weight.unsqueeze(1).repeat(
-            (1, batch_size, 1))
-        low2high_query_embed = self.low2high_query_embed.weight.unsqueeze(1).repeat(
-            (1, batch_size, 1))
+        if self.use_shared_query:
+            query_feat = self.query_feat.weight.unsqueeze(1).repeat(
+                (1, batch_size, 1))
+            query_embed = self.query_embed.weight.unsqueeze(1).repeat(
+                (1, batch_size, 1))
+            high2low_query_feat = query_feat
+            high2low_query_embed = query_embed
+            low2high_query_feat = query_feat
+            low2high_query_embed = query_embed
+        else:
+            high2low_query_feat = self.high2low_query_feat.weight.unsqueeze(1).repeat(
+                (1, batch_size, 1))
+            high2low_query_embed = self.high2low_query_embed.weight.unsqueeze(1).repeat(
+                (1, batch_size, 1))
+            low2high_query_feat = self.low2high_query_feat.weight.unsqueeze(1).repeat(
+                (1, batch_size, 1))
+            low2high_query_embed = self.low2high_query_embed.weight.unsqueeze(1).repeat(
+                (1, batch_size, 1))
 
         high2low_cls_pred_list = []
         high2low_bbox_pred_list = []
