@@ -4,7 +4,7 @@
 #SBATCH --gres=gpu:8
 #SBATCH --cpus-per-task=5
 #SBATCH --ntasks-per-node=8
-#SBATCH --time=1-00:00
+#SBATCH --time=6-00:00
 
 source ~/.bashrc
 module load cuda
