@@ -3,7 +3,7 @@ import sys
 import json
 
 
-def select_best_result(log_json_file):
+def select_best_result(log_json_file, select_type):
     result_list = []
     with open(log_json_file, 'r') as f:
         for line in f:
@@ -15,8 +15,15 @@ def select_best_result(log_json_file):
                 epoch = int(data['epoch'])
                 result_list.append((epoch, R_20, mR_20, data))
 
-    R_weight = 1/3
-    mR_weight = 2/3
+    if select_type == 'all':
+        R_weight = 1/3
+        mR_weight = 2/3
+    elif select_type == 'R':
+        R_weight = 1
+        mR_weight = 0
+    elif select_type == 'mR':
+        R_weight = 0
+        mR_weight = 1
     best_result_info = (0, 0, 0, '')
     for result in result_list:
         best_result = best_result_info[1] * R_weight + \
@@ -34,4 +41,8 @@ def select_best_result(log_json_file):
 
 if __name__ == '__main__':
     in_file = sys.argv[1]
-    select_best_result(in_file)
+    try:
+        select_type = sys.argv[2]
+    except:
+        select_type = 'all'
+    select_best_result(in_file, select_type)
