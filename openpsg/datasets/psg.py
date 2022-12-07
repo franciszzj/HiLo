@@ -245,17 +245,25 @@ class PanopticSceneGraphDataset(CocoPanopticDataset):
             all_rel_sets = defaultdict(list)
             for (o0, o1, r) in gt_rels:
                 all_rel_sets[(o0, o1)].append(r)
+            random_gt_rels = []
+            high2low_gt_rels = []
+            low2high_gt_rels = []
             gt_rels = []
             for k, v in all_rel_sets.items():
-                if (len(v) == 1) or self.overlap_rel_choice_type == 'random':
-                    v_final = np.random.choice(v)
-                elif self.overlap_rel_choice_type == 'low2high':
-                    v_idx = np.argmax([self.rel2freq[i] for i in v])
-                    v_final = v[v_idx]
-                elif self.overlap_rel_choice_type == 'high2low':
-                    v_idx = np.argmin([self.rel2freq[i] for i in v])
-                    v_final = v[v_idx]
-                gt_rels.append((k[0], k[1], v_final))
+                random_gt_rels.append((k[0], k[1], np.random.choice(v)))
+                v_idx = np.argmin([self.rel2freq[i] for i in v])
+                high2low_gt_rels.append((k[0], k[1], v[v_idx]))
+                v_idx = np.argmax([self.rel2freq[i] for i in v])
+                low2high_gt_rels.append((k[0], k[1], v[v_idx]))
+            if self.overlap_rel_choice_type == 'random':
+                gt_rels = random_gt_rels
+            elif self.overlap_rel_choice_type == 'high2low':
+                gt_rels = high2low_gt_rels
+            elif self.overlap_rel_choice_type == 'low2high':
+                gt_rels = low2high_gt_rels
+            random_gt_rels = np.array(random_gt_rels, dtype=np.int32)
+            high2low_gt_rels = np.array(high2low_gt_rels, dtype=np.int32)
+            low2high_gt_rels = np.array(low2high_gt_rels, dtype=np.int32)
             gt_rels = np.array(gt_rels, dtype=np.int32)
         else:
             # for test or val set, filter the duplicate triplets,
@@ -288,6 +296,14 @@ class PanopticSceneGraphDataset(CocoPanopticDataset):
             masks=gt_mask_infos,
             seg_map=d['pan_seg_file_name'],
         )
+        if self.split == 'train':
+            ann['random_gt_rels'] = random_gt_rels
+            ann['high2low_gt_rels'] = high2low_gt_rels
+            ann['low2high_gt_rels'] = low2high_gt_rels
+        else:
+            ann['random_gt_rels'] = gt_rels
+            ann['high2low_gt_rels'] = gt_rels
+            ann['low2high_gt_rels'] = gt_rels
 
         return ann
 
