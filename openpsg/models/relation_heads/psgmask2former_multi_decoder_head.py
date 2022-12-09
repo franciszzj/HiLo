@@ -688,37 +688,52 @@ class PSGMask2FormerMultiDecoderHead(PSGMaskFormerHead):
             low2high_cls_pred_list, low2high_bbox_pred_list, low2high_mask_pred_list)
 
         if os.getenv('MERGE_PREDICT', 'false').lower() == 'true' and not self.training:
-            pred1 = (high2low_all_cls_scores,
-                     high2low_all_bbox_preds, high2low_all_mask_preds)
-            pred2 = (low2high_all_cls_scores,
-                     low2high_all_bbox_preds, low2high_all_mask_preds)
+            merge_type = 'soft_merge'
+            if merge_type == 'hard_merge':
+                pred1 = (high2low_all_cls_scores,
+                         high2low_all_bbox_preds, high2low_all_mask_preds)
+                pred2 = (low2high_all_cls_scores,
+                         low2high_all_bbox_preds, low2high_all_mask_preds)
 
-            gt_labels = kwargs['gt_labels'][0]
-            gt_bboxes = kwargs['gt_bboxes'][0]
-            gt_masks = kwargs['gt_masks'][0]
-            gt_rels = kwargs['gt_rels'][0]
-            gt_bboxes_ignore = None
-            gt = (gt_labels, gt_bboxes, gt_masks,
-                  gt_rels, img_metas, gt_bboxes_ignore)
+                gt_labels = kwargs['gt_labels'][0]
+                gt_bboxes = kwargs['gt_bboxes'][0]
+                gt_masks = kwargs['gt_masks'][0]
+                gt_rels = kwargs['gt_rels'][0]
+                # high2low_gt_rels = kwargs['high2low_gt_rels'][0]
+                # low2high_gt_rels = kwargs['low2high_gt_rels'][0]
+                gt_bboxes_ignore = None
+                gt = (gt_labels, gt_bboxes, gt_masks,
+                      gt_rels, gt_rels, gt_rels, img_metas, gt_bboxes_ignore)
 
-            input1 = pred1 + gt
-            input2 = pred2 + gt
-            loss1 = self.loss(*input1)
-            loss2 = self.loss(*input2)
+                input1 = pred1 + pred1 + gt
+                input2 = pred2 + pred2 + gt
+                loss1 = self.loss(*input1)
+                loss2 = self.loss(*input2)
 
-            loss1_value = sum([x.cpu().detach().item()
-                              for x in loss1.values()])
-            loss2_value = sum([x.cpu().detach().item()
-                              for x in loss2.values()])
+                loss1_value = sum([x.cpu().detach().item()
+                                   for x in loss1.values()])
+                loss2_value = sum([x.cpu().detach().item()
+                                   for x in loss2.values()])
 
-            if loss1_value < loss2_value:
-                all_cls_scores = high2low_all_cls_scores
-                all_bbox_preds = high2low_all_bbox_preds
-                all_mask_preds = high2low_all_mask_preds
-            else:
-                all_cls_scores = low2high_all_cls_scores
-                all_bbox_preds = low2high_all_bbox_preds
-                all_mask_preds = low2high_all_mask_preds
+                if loss1_value < loss2_value:
+                    all_cls_scores = high2low_all_cls_scores
+                    all_bbox_preds = high2low_all_bbox_preds
+                    all_mask_preds = high2low_all_mask_preds
+                else:
+                    all_cls_scores = low2high_all_cls_scores
+                    all_bbox_preds = low2high_all_bbox_preds
+                    all_mask_preds = low2high_all_mask_preds
+            elif merge_type == 'soft_merge':
+                all_cls_scores = {
+                    'sub': high2low_all_cls_scores['sub'] * 0.5 + low2high_all_cls_scores['sub'] * 0.5,
+                    'obj': high2low_all_cls_scores['obj'] * 0.5 + low2high_all_cls_scores['obj'] * 0.5,
+                    'rel': high2low_all_cls_scores['rel'] * 0.5 + low2high_all_cls_scores['rel'] * 0.5, }
+                all_bbox_preds = {
+                    'sub': high2low_all_bbox_preds['sub'] * 0.5 + low2high_all_bbox_preds['sub'] * 0.5,
+                    'obj': high2low_all_bbox_preds['obj'] * 0.5 + low2high_all_bbox_preds['obj'] * 0.5, }
+                all_mask_preds = {
+                    'sub': high2low_all_mask_preds['sub'] * 0.5 + low2high_all_mask_preds['sub'] * 0.5,
+                    'obj': high2low_all_mask_preds['obj'] * 0.5 + low2high_all_mask_preds['obj'] * 0.5, }
 
             return all_cls_scores, all_bbox_preds, all_mask_preds, all_cls_scores, all_bbox_preds, all_mask_preds
 
