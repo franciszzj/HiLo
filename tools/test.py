@@ -7,6 +7,8 @@ import time
 import warnings
 import pprint
 import copy
+import cv2
+import gc
 import numpy as np
 
 import mmcv
@@ -15,8 +17,10 @@ from grade import save_results
 from mmcv import Config, DictAction
 from mmcv.cnn import fuse_conv_bn
 from mmcv.parallel import MMDataParallel, MMDistributedDataParallel
+from mmcv.parallel import DataContainer as DC
 from mmcv.runner import (get_dist_info, init_dist, load_checkpoint,
                          wrap_fp16_model)
+from mmdet.core import encode_mask_results
 from mmdet.apis import multi_gpu_test, single_gpu_test
 from mmdet.datasets import build_dataloader, replace_ImageToTensor
 from mmdet.models import build_detector
@@ -24,11 +28,6 @@ from mmdet.models import build_detector
 from openpsg.datasets import build_dataset
 from openpsg.models.relation_heads.approaches import Result
 from grade import save_results
-
-if (os.getenv('SAVE_PREDICT', 'false').lower() == 'true') or \
-        (os.getenv('MERGE_PREDICT', 'false').lower() == 'true'):
-    from mmdet.core import encode_mask_results
-    from mmcv.parallel import DataContainer as DC
 
 
 def parse_args():
@@ -103,6 +102,7 @@ def parse_args():
         action='store_true',
         help='save output to a json file and save the panoptic mask as a png image into a folder for grading purpose'
     )
+    parser.add_argument('--vis', help='vis results and save them.')
 
     parser.add_argument('--local_rank', type=int, default=0)
     args = parser.parse_args()
@@ -218,18 +218,20 @@ def main():
         start_time = time.time()
         outputs = single_gpu_test(model, data_loader, args.show, args.show_dir,
                                   args.show_score_thr)
+
         '''
         # ##### code to test, add labels to test process.
         model.eval()
+        prog_bar = mmcv.ProgressBar(len(data_loader.dataset))
         outputs = []
         for i, data in enumerate(data_loader):
-            print(i)
             with torch.no_grad():
                 device = data['gt_labels'][0].data[0][0].device
                 gt_masks = data['gt_masks'][0].data[0][0].to_tensor(
                     torch.uint8, device)
                 data['gt_masks'] = [DC([[gt_masks]])]
                 result = model(return_loss=False, rescale=True, **data)
+            batch_size = len(result)
             # encode mask results
             if isinstance(result[0], tuple):
                 result = [(bbox_results, encode_mask_results(mask_results))
@@ -241,8 +243,35 @@ def main():
                     result[j]['ins_results'] = (bbox_results,
                                                 encode_mask_results(mask_results))
             outputs.extend(result)
+            for _ in range(batch_size):
+                prog_bar.update()
         # ##### code to test, add labels to test process.
+        # '''
+
         '''
+        # ##### Use pre saved predict results to after post-processing merge
+        predict1 = '/jmain02/home/J2AD019/exk01/zxz35-exk01/workspace/OpenPSG_v15/temp/v15_3_high2low.pkl'
+        predict2 = '/jmain02/home/J2AD019/exk01/zxz35-exk01/workspace/OpenPSG_v15/temp/v15_3_low2high.pkl'
+        print('load predict1: {}'.format(predict1))
+        outputs1 = mmcv.load(predict1)
+        print('load predict2: {}'.format(predict2))
+        outputs2 = mmcv.load(predict2)
+        print('load finish')
+        prog_bar = mmcv.ProgressBar(len(data_loader.dataset))
+        outputs = []
+        for idx, (output1, output2) in enumerate(zip(outputs1, outputs2)):
+            if idx >= len(data_loader.dataset):
+                break
+            # not use gt to find upper bound
+            data = None
+            # use gt to find upper bound
+            # data = data_loader.dataset[idx]
+            outputs.append(merge_results(output1, output2, data))
+            gc.collect()
+            prog_bar.update()
+        print('after post-processing merge finish.')
+        # ##### Use pre saved predict results to after post-processing merge
+        # '''
 
         duration = time.time() - start_time
         mean_duration = duration / len(data_loader)
@@ -264,6 +293,11 @@ def main():
         if args.out:
             print(f'\nwriting results to {args.out}')
             mmcv.dump(outputs, args.out)
+        if args.vis:
+            print(f'\nsave vis results to {args.vis}')
+            img_file_list = [data['img_metas'][0].data[0][0]['filename']
+                             for data in data_loader]
+            vis_outputs(outputs, img_file_list, save_dir=args.vis)
         kwargs = {} if args.eval_options is None else args.eval_options
         if args.format_only:
             dataset.format_results(outputs, **kwargs)
@@ -315,12 +349,12 @@ def dedup_triplets_based_on_iou(sub_labels, obj_labels, rel_labels, sub_masks, o
             other_o_mask = obj_masks[triplets_ids[1:]]
             # calculate ious
             s_ious = np.matmul(base_s_mask.astype(np.int64), other_s_mask.transpose(
-                1, 0).astype(np.int64)) / ((base_s_mask+other_s_mask) > 0).sum(-1)
+                1, 0).astype(np.int64)) / (((base_s_mask+other_s_mask) > 0).sum(-1) + 1e-8)
             o_ious = np.matmul(base_o_mask.astype(np.int64), other_o_mask.transpose(
-                1, 0).astype(np.int64)) / ((base_o_mask+other_o_mask) > 0).sum(-1)
+                1, 0).astype(np.int64)) / (((base_o_mask+other_o_mask) > 0).sum(-1) + 1e-8)
             ids_left = []
             for s_iou, o_iou, other_id in zip(s_ious[0], o_ious[0], triplets_ids[1:]):
-                if (s_iou > 0.99999) & (o_iou > 0.99999):
+                if (s_iou > 0.8) & (o_iou > 0.8):
                     keep_tri[other_id] = False
                 else:
                     ids_left.append(other_id)
@@ -335,7 +369,7 @@ def dedup_triplets_based_on_iou(sub_labels, obj_labels, rel_labels, sub_masks, o
     return keep_tri
 
 
-def merge_results(result1, result2):
+def merge_results(result1, result2, data=None):
     # when eval_pan_rels is true, it is more complicated to merge two results.
     # because we should merge two pan_seg into one.
     assert os.getenv('EVAL_PAN_RELS', 'true').lower() != 'true'
@@ -343,6 +377,18 @@ def merge_results(result1, result2):
     result2 = copy.deepcopy(result2)
     assert isinstance(result1, Result)
     assert isinstance(result2, Result)
+
+    # use ground truth to find the upper bound.
+    if data is not None:
+        gt_bboxes = data['gt_bboxes'][0].data.numpy()
+        gt_labels = data['gt_labels'][0].data.numpy() + 1
+        gt_rels = data['gt_rels'][0].data.numpy() - 1
+        gt_masks = data['gt_masks'][0].data.masks
+        gt_sub_labels = gt_labels[gt_rels[:, 0]]
+        gt_obj_labels = gt_labels[gt_rels[:, 1]]
+        gt_rel_labels = gt_rels[:, 2]
+        gt_sub_masks = gt_masks[gt_rels[:, 0]]
+        gt_obj_masks = gt_masks[gt_rels[:, 1]]
 
     # 1. parse result1
     bboxes1 = result1.refine_bboxes
@@ -368,27 +414,59 @@ def merge_results(result1, result2):
     pan_seg2 = result2.pan_results
     num2 = rel_pairs2.shape[0]
 
-    # 3. re-arrange based on rel_scores, output rel_idxes
-    rel_scores_all = np.concatenate((rel_scores1, rel_scores2), axis=0)
-    rel_idxes = np.argsort(rel_scores_all, axis=0)[::-1]
-
-    # 4. reshape result to (n, ...)
-    bboxes1 = bboxes1.reshape((num1, 2, 5))
-    labels1 = labels1.reshape((num1, 2))
+    # 3. reshape result to (n, ...)
+    bboxes1 = bboxes1.reshape((2, num1, 5)).transpose((1, 0, 2))
+    labels1 = labels1.reshape((2, num1)).transpose((1, 0))
     h, w = masks1.shape[-2:]
-    masks1 = masks1.reshape((num1, 2, h, w))
+    masks1 = masks1.reshape((2, num1, h, w)).transpose((1, 0, 2, 3))
 
-    bboxes2 = bboxes2.reshape((num2, 2, 5))
-    labels2 = labels2.reshape((num2, 2))
+    bboxes2 = bboxes2.reshape((2, num2, 5)).transpose((1, 0, 2))
+    labels2 = labels2.reshape((2, num2)).transpose((1, 0))
     h, w = masks2.shape[-2:]
-    masks2 = masks2.reshape((num2, 2, h, w))
+    masks2 = masks2.reshape((2, num2, h, w)).transpose((1, 0, 2, 3))
 
-    # 5. concatenate result1 and result2
+    # 4. concatenate result1 and result2
     bboxes_all = np.concatenate((bboxes1, bboxes2), axis=0)
     labels_all = np.concatenate((labels1, labels2), axis=0)
     rel_dists_all = np.concatenate((rel_dists1, rel_dists2), axis=0)
     rel_labels_all = np.concatenate((rel_labels1, rel_labels2), axis=0)
+    rel_scores_all = np.concatenate((rel_scores1, rel_scores2), axis=0)
     masks_all = np.concatenate((masks1, masks2), axis=0)
+
+    # use ground truth to find the upper bound.
+    if data is not None:
+        for i in range(rel_labels_all.shape[0]):
+            sub_label = labels_all[i, 0]
+            obj_label = labels_all[i, 1]
+            rel_label = rel_labels_all[i]
+            sub_mask = masks_all[i, 0]
+            obj_mask = masks_all[i, 1]
+            sub_h, sub_w = sub_mask.shape
+            obj_h, obj_w = obj_mask.shape
+            sub_mask = sub_mask.reshape((-1))
+            obj_mask = obj_mask.reshape((-1))
+            for j in range(gt_rel_labels.shape[0]):
+                gt_sub_label = gt_sub_labels[j]
+                gt_obj_label = gt_obj_labels[j]
+                gt_rel_label = gt_rel_labels[j]
+                gt_sub_mask = gt_sub_masks[j]
+                gt_obj_mask = gt_obj_masks[j]
+                if sub_label == gt_sub_label and obj_label == gt_obj_label and rel_label == gt_rel_label:
+                    gt_sub_mask = cv2.resize(
+                        gt_sub_mask, (sub_w, sub_h), interpolation=cv2.INTER_NEAREST)
+                    gt_obj_mask = cv2.resize(
+                        gt_obj_mask, (obj_w, obj_h), interpolation=cv2.INTER_NEAREST)
+                    gt_sub_mask = gt_sub_mask.reshape((-1))
+                    gt_obj_mask = gt_obj_mask.reshape((-1))
+                    sub_iou = np.matmul(sub_mask.astype(np.int64), gt_sub_mask.astype(
+                        np.int64)) / (((sub_mask+gt_sub_mask) > 0).sum(-1) + 1e-8)
+                    obj_iou = np.matmul(obj_mask.astype(np.int64), gt_obj_mask.astype(
+                        np.int64)) / (((obj_mask+gt_obj_mask) > 0).sum(-1) + 1e-8)
+                    if sub_iou > 0.5 and obj_iou > 0.5:
+                        rel_scores_all[i] = 1.0
+
+    # 5. re-arrange based on rel_scores, output rel_idxes
+    rel_idxes = np.argsort(rel_scores_all, axis=0)[::-1]
 
     # 6. re-arrange based on rel_idxes
     bboxes = bboxes_all[rel_idxes]
@@ -412,9 +490,9 @@ def merge_results(result1, result2):
     masks = masks[keep_tri]
 
     # 8. reshape bboxes, labels and masks to (n*2, ...)
-    bboxes = bboxes.reshape((-1, 5))
-    labels = labels.reshape((-1))
-    masks = masks.reshape((-1, h, w))
+    bboxes = bboxes.transpose((1, 0, 2)).reshape((-1, 5))
+    labels = labels.transpose((1, 0)).reshape((-1))
+    masks = masks.transpose((1, 0, 2, 3)).reshape((-1, h, w))
 
     # 9. construct merge result
     merge_result = Result(refine_bboxes=bboxes,
@@ -427,6 +505,176 @@ def merge_results(result1, result2):
                           pan_results=pan_seg1,
                           masks=masks)
     return merge_result
+
+
+object_classes = [
+    'person', 'bicycle', 'car', 'motorcycle', 'airplane', 'bus', 'train',
+    'truck', 'boat', 'traffic light', 'fire hydrant', 'stop sign',
+    'parking meter', 'bench', 'bird', 'cat', 'dog', 'horse', 'sheep', 'cow',
+    'elephant', 'bear', 'zebra', 'giraffe', 'backpack', 'umbrella', 'handbag',
+    'tie', 'suitcase', 'frisbee', 'skis', 'snowboard', 'sports ball', 'kite',
+    'baseball bat', 'baseball glove', 'skateboard', 'surfboard',
+    'tennis racket', 'bottle', 'wine glass', 'cup', 'fork', 'knife', 'spoon',
+    'bowl', 'banana', 'apple', 'sandwich', 'orange', 'broccoli', 'carrot',
+    'hot dog', 'pizza', 'donut', 'cake', 'chair', 'couch', 'potted plant',
+    'bed', 'dining table', 'toilet', 'tv', 'laptop', 'mouse', 'remote',
+    'keyboard', 'cell phone', 'microwave', 'oven', 'toaster', 'sink',
+    'refrigerator', 'book', 'clock', 'vase', 'scissors', 'teddy bear',
+    'hair drier', 'toothbrush', 'banner', 'blanket', 'bridge', 'cardboard',
+    'counter', 'curtain', 'door-stuff', 'floor-wood', 'flower', 'fruit',
+    'gravel', 'house', 'light', 'mirror-stuff', 'net', 'pillow', 'platform',
+    'playingfield', 'railroad', 'river', 'road', 'roof', 'sand', 'sea',
+    'shelf', 'snow', 'stairs', 'tent', 'towel', 'wall-brick', 'wall-stone',
+    'wall-tile', 'wall-wood', 'water-other', 'window-blind', 'window-other',
+    'tree-merged', 'fence-merged', 'ceiling-merged', 'sky-other-merged',
+    'cabinet-merged', 'table-merged', 'floor-other-merged', 'pavement-merged',
+    'mountain-merged', 'grass-merged', 'dirt-merged', 'paper-merged',
+    'food-other-merged', 'building-other-merged', 'rock-merged',
+    'wall-other-merged', 'rug-merged'
+]
+predicate_classes = [
+    'over',
+    'in front of',
+    'beside',
+    'on',
+    'in',
+    'attached to',
+    'hanging from',
+    'on back of',
+    'falling off',
+    'going down',
+    'painted on',
+    'walking on',
+    'running on',
+    'crossing',
+    'standing on',
+    'lying on',
+    'sitting on',
+    'flying over',
+    'jumping over',
+    'jumping from',
+    'wearing',
+    'holding',
+    'carrying',
+    'looking at',
+    'guiding',
+    'kissing',
+    'eating',
+    'drinking',
+    'feeding',
+    'biting',
+    'catching',
+    'picking',
+    'playing with',
+    'chasing',
+    'climbing',
+    'cleaning',
+    'playing',
+    'touching',
+    'pushing',
+    'pulling',
+    'opening',
+    'cooking',
+    'talking to',
+    'throwing',
+    'slicing',
+    'driving',
+    'riding',
+    'parked on',
+    'driving on',
+    'about to hit',
+    'kicking',
+    'swinging',
+    'entering',
+    'exiting',
+    'enclosing',
+    'leaning on',
+]
+
+
+def vis_outputs(outputs, img_file_list, save_dir='./vis_results', merge_vis=True, save_top_k=20):
+    if not os.path.exists(save_dir):
+        os.makedirs(save_dir)
+    for output, img_file in zip(outputs, img_file_list):
+        bboxes = output.refine_bboxes
+        labels = output.labels
+        rel_pairs = output.rel_pair_idxes
+        rel_dists = output.rel_dists
+        rel_labels = output.rel_labels
+        rel_scores = output.rel_scores
+        masks = output.masks
+        pan_seg = output.pan_results
+        rel_num = rel_labels.shape[0]
+        m_h, m_w = masks.shape[-2:]
+
+        img = cv2.imread(img_file)
+        if save_top_k == 20:
+            row_num = 5
+            col_num = 4
+        elif save_top_k == 50:
+            row_num = 10
+            col_num = 5
+        elif save_top_k == 100:
+            row_num = 10
+            col_num = 10
+        if merge_vis:
+            merge_vis_img = np.zeros((m_h * row_num, m_w * col_num, 3))
+        for idx, rel_label in enumerate(rel_labels):
+            if idx >= save_top_k:
+                continue
+            vis_img = copy.deepcopy(img)
+            # data prepare
+            relation = predicate_classes[rel_label - 1]
+            sub_idx = rel_pairs[idx, 0]
+            obj_idx = rel_pairs[idx, 1]
+            sub_label = labels[sub_idx]
+            obj_label = labels[obj_idx]
+            subject = object_classes[sub_label - 1]
+            object = object_classes[obj_label - 1]
+            sub_bbox = bboxes[sub_idx].astype(np.int32)
+            obj_bbox = bboxes[obj_idx].astype(np.int32)
+            sub_mask = masks[sub_idx].astype(np.int32)
+            obj_mask = masks[obj_idx].astype(np.int32)
+            i1, i2 = np.where(sub_mask == 1)
+            sub_mask_template = np.zeros((m_h, m_w, vis_img.shape[-1]))
+            sub_mask_template[i1, i2] = sub_mask_template[i1, i2] + \
+                np.array([255, 0, 0])
+            i1, i2 = np.where(obj_mask == 1)
+            obj_mask_template = np.zeros((m_h, m_w, vis_img.shape[-1]))
+            obj_mask_template[i1, i2] = obj_mask_template[i1, i2] + \
+                np.array([0, 0, 255])
+            # mask
+            vis_img = vis_img + sub_mask_template * 0.5
+            vis_img = vis_img + obj_mask_template * 0.5
+            # subject
+            cv2.rectangle(vis_img, (sub_bbox[0], sub_bbox[1]), (sub_bbox[2], sub_bbox[3]),
+                          color=(255, 0, 0), thickness=3)
+            cv2.putText(vis_img, subject, (sub_bbox[0], sub_bbox[3]),
+                        cv2.FONT_HERSHEY_PLAIN, 2, (255, 128, 0), thickness=2)
+            # object
+            cv2.rectangle(vis_img, (obj_bbox[0], obj_bbox[1]), (obj_bbox[2], obj_bbox[3]),
+                          color=(0, 0, 255), thickness=3)
+            cv2.putText(vis_img, object, (obj_bbox[0], obj_bbox[3]),
+                        cv2.FONT_HERSHEY_PLAIN, 2, (0, 128, 255), thickness=2)
+            # relation
+            cv2.putText(vis_img, relation, ((sub_bbox[0]+obj_bbox[0])//2, (sub_bbox[3]+obj_bbox[3])//2),
+                        cv2.FONT_HERSHEY_PLAIN, 2, (128, 255, 128), thickness=2)
+
+            if merge_vis:
+                y_idx = idx // col_num
+                x_idx = idx % col_num
+                merge_vis_img[(m_h * y_idx):(m_h * (y_idx + 1)),
+                              (m_w * x_idx):(m_w * (x_idx + 1))] = vis_img
+            else:
+                img_name = img_file.split('/')[-1]
+                save_name = img_name.replace('.jpg', '_{}.jpg'.format(idx))
+                save_path = os.path.join(save_dir, save_name)
+                cv2.imwrite(save_path, vis_img)
+
+        if merge_vis:
+            img_name = img_file.split('/')[-1]
+            save_path = os.path.join(save_dir, img_name)
+            cv2.imwrite(save_path, merge_vis_img)
 
 
 if __name__ == '__main__':
