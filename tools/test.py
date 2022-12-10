@@ -250,8 +250,8 @@ def main():
 
         '''
         # ##### Use pre saved predict results to after post-processing merge
-        predict1 = '/jmain02/home/J2AD019/exk01/zxz35-exk01/workspace/OpenPSG_v15/temp/v15_3_high2low.pkl'
-        predict2 = '/jmain02/home/J2AD019/exk01/zxz35-exk01/workspace/OpenPSG_v15/temp/v15_3_low2high.pkl'
+        predict1 = '/jmain02/home/J2AD019/exk01/zxz35-exk01/workspace/OpenPSG/temp/v15_3_high2low.pkl'
+        predict2 = '/jmain02/home/J2AD019/exk01/zxz35-exk01/workspace/OpenPSG/temp/v15_3_low2high.pkl'
         print('load predict1: {}'.format(predict1))
         outputs1 = mmcv.load(predict1)
         print('load predict2: {}'.format(predict2))
@@ -382,7 +382,7 @@ def merge_results(result1, result2, data=None):
     if data is not None:
         gt_bboxes = data['gt_bboxes'][0].data.numpy()
         gt_labels = data['gt_labels'][0].data.numpy() + 1
-        gt_rels = data['gt_rels'][0].data.numpy() - 1
+        gt_rels = data['gt_rels'][0].data.numpy()
         gt_masks = data['gt_masks'][0].data.masks
         gt_sub_labels = gt_labels[gt_rels[:, 0]]
         gt_obj_labels = gt_labels[gt_rels[:, 1]]
