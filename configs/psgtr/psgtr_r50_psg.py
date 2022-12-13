@@ -219,14 +219,14 @@ log_config = dict(
     hooks=[
         dict(type='TextLoggerHook'),
         # dict(type='TensorboardLoggerHook'),
-        # dict(
-        #     type='WandbLoggerHook',
-        #     init_kwargs=dict(
-        #         project=project_name,
-        #         name=expt_name,
-        #         # config=work_dir + "/cfg.yaml"
-        #     ),
-        # )
+        dict(
+            type='WandbLoggerHook',
+            init_kwargs=dict(
+                project=project_name,
+                name=expt_name,
+                # config=work_dir + "/cfg.yaml"
+            ),
+        )
     ],
 )
 

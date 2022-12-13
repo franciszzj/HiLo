@@ -16,6 +16,8 @@ GPUS=8
 PORT=29500
 
 PYTHONPATH="$(dirname $0)/..":$PYTHONPATH \
+EVAL_PAN_RELS=False \
+WANDB_MODE="offline" \
 python -m torch.distributed.launch \
   --nproc_per_node=$GPUS \
   --master_port=$PORT \

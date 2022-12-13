@@ -17,6 +17,7 @@ GPUS=4
 PORT=29500
 
 PYTHONPATH="$(dirname $0)/..":$PYTHONPATH \
+EVAL_PAN_RELS=False \
 python -m torch.distributed.launch \
   --nproc_per_node=$GPUS \
   --master_port=$PORT \

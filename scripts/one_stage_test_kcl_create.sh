@@ -16,6 +16,7 @@ CONFIG=$1
 MODEL=$2
 
 PYTHONPATH="$(dirname $0)/..":$PYTHONPATH \
+EVAL_PAN_RELS=False \
 python tools/test.py \
   $CONFIG \
   $MODEL \
