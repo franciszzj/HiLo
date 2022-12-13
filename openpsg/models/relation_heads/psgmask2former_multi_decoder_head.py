@@ -50,6 +50,8 @@ class PSGMask2FormerMultiDecoderHead(PSGMaskFormerHead):
                                   ignore_masked_attention_layers=[]),
                  use_shared_query=False,
                  test_forward_output_type='high2low',
+                 use_consistency_loss=False,
+                 consistency_loss_weight=10.0,
                  sub_loss_cls=dict(type='CrossEntropyLoss',
                                    use_sigmoid=False,
                                    loss_weight=1.0,
@@ -89,6 +91,8 @@ class PSGMask2FormerMultiDecoderHead(PSGMaskFormerHead):
         self.decoder_cfg = decoder_cfg
         self.use_shared_query = use_shared_query
         self.test_forward_output_type = test_forward_output_type
+        self.use_consistency_loss = use_consistency_loss
+        self.consistency_loss_weight = consistency_loss_weight
         self.train_cfg = train_cfg
         self.test_cfg = test_cfg
 
@@ -268,6 +272,11 @@ class PSGMask2FormerMultiDecoderHead(PSGMaskFormerHead):
         self.obj_loss_dice = build_loss(obj_loss_dice)  # mask
         self.rel_loss_cls = build_loss(rel_loss_cls)  # rel
 
+        if self.use_consistency_loss:
+            self.consistency_cls_loss = nn.KLDivLoss(
+                reduction='batchmean', log_target=True)
+            self.consistency_reg_loss = nn.SmoothL1Loss()
+
     def init_weights(self):
         for m in self.decoder_input_projs:
             if isinstance(m, Conv2d):
@@ -438,6 +447,28 @@ class PSGMask2FormerMultiDecoderHead(PSGMaskFormerHead):
             loss_dict[f'd{num_dec_layer}.low2high_s_loss_dice'] = low2high_s_loss_dice_i
             loss_dict[f'd{num_dec_layer}.low2high_o_loss_dice'] = low2high_o_loss_dice_i
             num_dec_layer += 1
+
+        if self.use_consistency_loss:
+            high2low_sub_input = F.log_softmax(high2low_all_s_cls_scores[-1].flatten(start_dim=0, end_dim=1), dim=1)  # noqa
+            low2high_sub_input = F.log_softmax(low2high_all_s_cls_scores[-1].flatten(start_dim=0, end_dim=1), dim=1)  # noqa
+            high2low_obj_input = F.log_softmax(high2low_all_o_cls_scores[-1].flatten(start_dim=0, end_dim=1), dim=1)  # noqa
+            low2high_obj_input = F.log_softmax(low2high_all_o_cls_scores[-1].flatten(start_dim=0, end_dim=1), dim=1)  # noqa
+            sub_consistency_cls1_loss = self.consistency_cls_loss(high2low_sub_input, low2high_sub_input) * self.consistency_loss_weight  # noqa
+            sub_consistency_cls2_loss = self.consistency_cls_loss(low2high_sub_input, high2low_sub_input) * self.consistency_loss_weight  # noqa
+            obj_consistency_cls1_loss = self.consistency_cls_loss(high2low_obj_input, low2high_obj_input) * self.consistency_loss_weight  # noqa
+            obj_consistency_cls2_loss = self.consistency_cls_loss(low2high_obj_input, high2low_obj_input) * self.consistency_loss_weight  # noqa
+            sub_consistency_bbox_loss = self.consistency_reg_loss(high2low_all_s_bbox_preds[-1], low2high_all_s_bbox_preds[-1]) * self.consistency_loss_weight  # noqa
+            obj_consistency_bbox_loss = self.consistency_reg_loss(high2low_all_o_bbox_preds[-1], low2high_all_o_bbox_preds[-1]) * self.consistency_loss_weight  # noqa
+            sub_consistency_mask_loss = self.consistency_reg_loss(high2low_all_s_mask_preds[-1], low2high_all_s_mask_preds[-1]) * self.consistency_loss_weight  # noqa
+            obj_consistency_mask_loss = self.consistency_reg_loss(high2low_all_o_mask_preds[-1], low2high_all_o_mask_preds[-1]) * self.consistency_loss_weight  # noqa
+            loss_dict['sub_consistency_cls1_loss'] = sub_consistency_cls1_loss
+            loss_dict['sub_consistency_cls2_loss'] = sub_consistency_cls2_loss
+            loss_dict['obj_consistency_cls1_loss'] = obj_consistency_cls1_loss
+            loss_dict['obj_consistency_cls2_loss'] = obj_consistency_cls2_loss
+            loss_dict['sub_consistency_bbox_loss'] = sub_consistency_bbox_loss
+            loss_dict['obj_consistency_bbox_loss'] = obj_consistency_bbox_loss
+            loss_dict['sub_consistency_mask_loss'] = sub_consistency_mask_loss
+            loss_dict['obj_consistency_mask_loss'] = obj_consistency_mask_loss
 
         return loss_dict
 
