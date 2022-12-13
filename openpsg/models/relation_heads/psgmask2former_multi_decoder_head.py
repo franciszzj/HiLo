@@ -306,6 +306,9 @@ class PSGMask2FormerMultiDecoderHead(PSGMaskFormerHead):
             for p in self.global_transformer_decoder.parameters():
                 if p.dim() > 1:
                     nn.init.xavier_uniform_(p)
+            for p in self.pm_dict.parameters():
+                if p.dim() > 1:
+                    nn.init.xavier_uniform_(p)
         for p in self.high2low_transformer_decoder.parameters():
             if p.dim() > 1:
                 nn.init.xavier_uniform_(p)
