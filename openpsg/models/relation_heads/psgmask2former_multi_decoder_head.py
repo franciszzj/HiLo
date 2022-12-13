@@ -459,8 +459,8 @@ class PSGMask2FormerMultiDecoderHead(PSGMaskFormerHead):
             obj_consistency_cls2_loss = self.consistency_cls_loss(low2high_obj_input, high2low_obj_input) * self.consistency_loss_weight  # noqa
             sub_consistency_bbox_loss = self.consistency_reg_loss(high2low_all_s_bbox_preds[-1], low2high_all_s_bbox_preds[-1]) * self.consistency_loss_weight  # noqa
             obj_consistency_bbox_loss = self.consistency_reg_loss(high2low_all_o_bbox_preds[-1], low2high_all_o_bbox_preds[-1]) * self.consistency_loss_weight  # noqa
-            sub_consistency_mask_loss = self.consistency_reg_loss(high2low_all_s_mask_preds[-1], low2high_all_s_mask_preds[-1]) * self.consistency_loss_weight  # noqa
-            obj_consistency_mask_loss = self.consistency_reg_loss(high2low_all_o_mask_preds[-1], low2high_all_o_mask_preds[-1]) * self.consistency_loss_weight  # noqa
+            sub_consistency_mask_loss = self.consistency_reg_loss(high2low_all_s_mask_preds[-1].sigmoid(), low2high_all_s_mask_preds[-1].sigmoid()) * self.consistency_loss_weight  # noqa
+            obj_consistency_mask_loss = self.consistency_reg_loss(high2low_all_o_mask_preds[-1].sigmoid(), low2high_all_o_mask_preds[-1].sigmoid()) * self.consistency_loss_weight  # noqa
             loss_dict['sub_consistency_cls1_loss'] = sub_consistency_cls1_loss
             loss_dict['sub_consistency_cls2_loss'] = sub_consistency_cls2_loss
             loss_dict['obj_consistency_cls1_loss'] = obj_consistency_cls1_loss
