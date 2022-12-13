@@ -52,6 +52,8 @@ class PSGMask2FormerMultiDecoderHead(PSGMaskFormerHead):
                  test_forward_output_type='high2low',
                  use_consistency_loss=False,
                  consistency_loss_weight=10.0,
+                 use_decoder_parameter_mapping=False,
+                 decoder_parameter_mapping_num_layers=3,
                  sub_loss_cls=dict(type='CrossEntropyLoss',
                                    use_sigmoid=False,
                                    loss_weight=1.0,
@@ -93,6 +95,8 @@ class PSGMask2FormerMultiDecoderHead(PSGMaskFormerHead):
         self.test_forward_output_type = test_forward_output_type
         self.use_consistency_loss = use_consistency_loss
         self.consistency_loss_weight = consistency_loss_weight
+        self.use_decoder_parameter_mapping = use_decoder_parameter_mapping
+        self.decoder_parameter_mapping_num_layers = decoder_parameter_mapping_num_layers
         self.train_cfg = train_cfg
         self.test_cfg = test_cfg
 
@@ -109,11 +113,17 @@ class PSGMask2FormerMultiDecoderHead(PSGMaskFormerHead):
         transformer_decoder_ = copy.deepcopy(transformer_decoder)
         self.num_heads = transformer_decoder_.transformerlayers.attn_cfgs.num_heads
         self.num_transformer_decoder_layers = transformer_decoder_.num_layers
+        if self.use_decoder_parameter_mapping:
+            self.global_transformer_decoder = build_transformer_layer_sequence(
+                transformer_decoder_)
         self.high2low_transformer_decoder = build_transformer_layer_sequence(
             transformer_decoder_)
         self.low2high_transformer_decoder = build_transformer_layer_sequence(
             transformer_decoder_)
         self.decoder_embed_dims = self.high2low_transformer_decoder.embed_dims
+
+        if self.use_decoder_parameter_mapping:
+            self.build_parameter_mapping()
 
         self.decoder_input_projs = ModuleList()
         # from low resolution to high resolution
@@ -132,6 +142,11 @@ class PSGMask2FormerMultiDecoderHead(PSGMaskFormerHead):
             self.query_feat = nn.Embedding(
                 self.num_queries, feat_channels)
         else:
+            if self.use_decoder_parameter_mapping:
+                self.global_query_embed = nn.Embedding(
+                    self.num_queries, out_channels)
+            self.global_query_feat = nn.Embedding(
+                self.num_queries, feat_channels)
             self.high2low_query_embed = nn.Embedding(
                 self.num_queries, out_channels)
             self.high2low_query_feat = nn.Embedding(
@@ -165,6 +180,9 @@ class PSGMask2FormerMultiDecoderHead(PSGMaskFormerHead):
             self.decoder_embed_dims, self.obj_cls_out_channels)
         self.obj_box_embed = MLP(
             self.decoder_embed_dims, self.decoder_embed_dims, 4, 3)
+        if self.use_decoder_parameter_mapping:
+            self.global_rel_cls_embed = Linear(
+                self.decoder_embed_dims, self.rel_cls_out_channels)
         self.high2low_rel_cls_embed = Linear(
             self.decoder_embed_dims, self.rel_cls_out_channels)
         self.low2high_rel_cls_embed = Linear(
@@ -284,12 +302,39 @@ class PSGMask2FormerMultiDecoderHead(PSGMaskFormerHead):
 
         self.pixel_decoder.init_weights()
 
+        if self.use_decoder_parameter_mapping:
+            for p in self.global_transformer_decoder.parameters():
+                if p.dim() > 1:
+                    nn.init.xavier_uniform_(p)
         for p in self.high2low_transformer_decoder.parameters():
             if p.dim() > 1:
                 nn.init.xavier_uniform_(p)
         for p in self.low2high_transformer_decoder.parameters():
             if p.dim() > 1:
                 nn.init.xavier_uniform_(p)
+
+    def build_parameter_mapping(self):
+        self.pm_dict = nn.ModuleDict()
+        for n, p in self.high2low_transformer_decoder.named_parameters():
+            p.requires_grad = False
+            p_size = p.shape[0]
+            if len(p.shape) == 2:
+                pm = MLConv1d(p_size, p_size, p_size,
+                              self.decoder_parameter_mapping_num_layers)
+            elif len(p.shape) == 1:
+                pm = MLP(p_size, p_size, p_size,
+                         self.decoder_parameter_mapping_num_layers)
+            self.pm_dict.update({n.replace('.', '_'): pm})
+        for n, p in self.low2high_transformer_decoder.named_parameters():
+            p.requires_grad = False
+            p_size = p.shape[0]
+            if len(p.shape) == 2:
+                pm = MLConv1d(p_size, p_size, p_size,
+                              self.decoder_parameter_mapping_num_layers)
+            elif len(p.shape) == 1:
+                pm = MLP(p_size, p_size, p_size,
+                         self.decoder_parameter_mapping_num_layers)
+            self.pm_dict.update({n.replace('.', '_'): pm})
 
     @force_fp32(apply_to=('high2low_all_cls_scores', 'high2low_all_bbox_preds', 'high2low_all_mask_preds', 'low2high_all_cls_scores', 'low2high_all_bbox_preds', 'low2high_all_mask_preds'))
     def loss(self,
@@ -457,6 +502,7 @@ class PSGMask2FormerMultiDecoderHead(PSGMaskFormerHead):
             sub_consistency_cls2_loss = self.consistency_cls_loss(low2high_sub_input, high2low_sub_input) * self.consistency_loss_weight  # noqa
             obj_consistency_cls1_loss = self.consistency_cls_loss(high2low_obj_input, low2high_obj_input) * self.consistency_loss_weight  # noqa
             obj_consistency_cls2_loss = self.consistency_cls_loss(low2high_obj_input, high2low_obj_input) * self.consistency_loss_weight  # noqa
+            # bbox has already done sigmoid(), but mask not.
             sub_consistency_bbox_loss = self.consistency_reg_loss(high2low_all_s_bbox_preds[-1], low2high_all_s_bbox_preds[-1]) * self.consistency_loss_weight  # noqa
             obj_consistency_bbox_loss = self.consistency_reg_loss(high2low_all_o_bbox_preds[-1], low2high_all_o_bbox_preds[-1]) * self.consistency_loss_weight  # noqa
             sub_consistency_mask_loss = self.consistency_reg_loss(high2low_all_s_mask_preds[-1].sigmoid(), low2high_all_s_mask_preds[-1].sigmoid()) * self.consistency_loss_weight  # noqa
@@ -654,6 +700,9 @@ class PSGMask2FormerMultiDecoderHead(PSGMaskFormerHead):
         ignore_masked_attention_layers = self.decoder_cfg.get(
             'ignore_masked_attention_layers', [])
 
+        if self.use_decoder_parameter_mapping:
+            self.update_perspective_decoder()
+
         for i in range(self.num_transformer_decoder_layers):
             level_idx = i % self.num_transformer_feat_level
             # if a mask is all True(all background), then set it all False.
@@ -770,6 +819,20 @@ class PSGMask2FormerMultiDecoderHead(PSGMaskFormerHead):
 
         return high2low_all_cls_scores, high2low_all_bbox_preds, high2low_all_mask_preds, low2high_all_cls_scores, low2high_all_bbox_preds, low2high_all_mask_preds
 
+    @torch.no_grad()
+    def update_perspective_decoder(self):
+        # use global decoder and parameter mapping to update high2low and low2high decoder parameters.
+        for (global_n, global_p), (high2low_n, high2low_p), (low2high_n, low2high_p) in zip(
+                self.global_transformer_decoder.named_parameters(),
+                self.high2low_transformer_decoder.named_parameters(),
+                self.low2high_transformer_decoder.named_parameters()):
+            assert global_n.replace('global', 'high2low') == high2low_n
+            assert global_n.replace('global', 'low2high') == low2high_n
+            high2low_p.data = self.pm_dict[high2low_n.replace('.', '_')](
+                global_p.data)
+            low2high_p.data = self.pm_dict[low2high_n.replace('.', '_')](
+                global_p.data)
+
     def pack_model_outputs(self, cls_pred_list, bbox_pred_list, mask_pred_list):
         all_s_cls_scores = []
         all_o_cls_scores = []
@@ -885,3 +948,19 @@ class PSGMask2FormerMultiDecoderHead(PSGMaskFormerHead):
                 outs = outs[3:]
         results_list = self.get_results(*outs, img_metas, rescale=rescale)
         return results_list
+
+
+class MLConv1d(nn.Module):
+    """Very simple multi-layer conv1d."""
+
+    def __init__(self, input_dim, hidden_dim, output_dim, num_layers, kernel_size=1):
+        super().__init__()
+        self.num_layers = num_layers
+        h = [hidden_dim] * (num_layers - 1)
+        self.layers = nn.ModuleList(
+            nn.Conv1d(n, k, kernel_size) for n, k in zip([input_dim] + h, h + [output_dim]))
+
+    def forward(self, x):
+        for i, layer in enumerate(self.layers):
+            x = F.relu(layer(x)) if i < self.num_layers - 1 else layer(x)
+        return x
