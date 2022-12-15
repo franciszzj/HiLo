@@ -54,6 +54,7 @@ class PSGMask2FormerMultiDecoderHead(PSGMaskFormerHead):
                  consistency_loss_weight=10.0,
                  use_decoder_parameter_mapping=False,
                  decoder_parameter_mapping_num_layers=3,
+                 optim_global_decoder=False,
                  sub_loss_cls=dict(type='CrossEntropyLoss',
                                    use_sigmoid=False,
                                    loss_weight=1.0,
@@ -97,6 +98,7 @@ class PSGMask2FormerMultiDecoderHead(PSGMaskFormerHead):
         self.consistency_loss_weight = consistency_loss_weight
         self.use_decoder_parameter_mapping = use_decoder_parameter_mapping
         self.decoder_parameter_mapping_num_layers = decoder_parameter_mapping_num_layers
+        self.optim_global_decoder = optim_global_decoder
         self.train_cfg = train_cfg
         self.test_cfg = test_cfg
 
@@ -113,7 +115,7 @@ class PSGMask2FormerMultiDecoderHead(PSGMaskFormerHead):
         transformer_decoder_ = copy.deepcopy(transformer_decoder)
         self.num_heads = transformer_decoder_.transformerlayers.attn_cfgs.num_heads
         self.num_transformer_decoder_layers = transformer_decoder_.num_layers
-        if self.use_decoder_parameter_mapping:
+        if self.optim_global_decoder or self.use_decoder_parameter_mapping:
             self.global_transformer_decoder = build_transformer_layer_sequence(
                 transformer_decoder_)
         self.high2low_transformer_decoder = build_transformer_layer_sequence(
@@ -142,11 +144,11 @@ class PSGMask2FormerMultiDecoderHead(PSGMaskFormerHead):
             self.query_feat = nn.Embedding(
                 self.num_queries, feat_channels)
         else:
-            if self.use_decoder_parameter_mapping:
+            if self.optim_global_decoder or self.use_decoder_parameter_mapping:
                 self.global_query_embed = nn.Embedding(
                     self.num_queries, out_channels)
-            self.global_query_feat = nn.Embedding(
-                self.num_queries, feat_channels)
+                self.global_query_feat = nn.Embedding(
+                    self.num_queries, feat_channels)
             self.high2low_query_embed = nn.Embedding(
                 self.num_queries, out_channels)
             self.high2low_query_feat = nn.Embedding(
@@ -180,7 +182,7 @@ class PSGMask2FormerMultiDecoderHead(PSGMaskFormerHead):
             self.decoder_embed_dims, self.obj_cls_out_channels)
         self.obj_box_embed = MLP(
             self.decoder_embed_dims, self.decoder_embed_dims, 4, 3)
-        if self.use_decoder_parameter_mapping:
+        if self.optim_global_decoder:
             self.global_rel_cls_embed = Linear(
                 self.decoder_embed_dims, self.rel_cls_out_channels)
         self.high2low_rel_cls_embed = Linear(
@@ -302,10 +304,11 @@ class PSGMask2FormerMultiDecoderHead(PSGMaskFormerHead):
 
         self.pixel_decoder.init_weights()
 
-        if self.use_decoder_parameter_mapping:
+        if self.use_decoder_parameter_mapping or self.optim_global_decoder:
             for p in self.global_transformer_decoder.parameters():
                 if p.dim() > 1:
                     nn.init.xavier_uniform_(p)
+        if self.use_decoder_parameter_mapping:
             for p in self.pm_dict.parameters():
                 if p.dim() > 1:
                     nn.init.xavier_uniform_(p)
@@ -339,7 +342,8 @@ class PSGMask2FormerMultiDecoderHead(PSGMaskFormerHead):
                          self.decoder_parameter_mapping_num_layers)
             self.pm_dict.update({n.replace('.', '_'): pm})
 
-    @force_fp32(apply_to=('high2low_all_cls_scores', 'high2low_all_bbox_preds', 'high2low_all_mask_preds', 'low2high_all_cls_scores', 'low2high_all_bbox_preds', 'low2high_all_mask_preds'))
+    @force_fp32(apply_to=('high2low_all_cls_scores', 'high2low_all_bbox_preds', 'high2low_all_mask_preds',
+                          'low2high_all_cls_scores', 'low2high_all_bbox_preds', 'low2high_all_mask_preds'))
     def loss(self,
              high2low_all_cls_scores,
              high2low_all_bbox_preds,
@@ -521,6 +525,273 @@ class PSGMask2FormerMultiDecoderHead(PSGMaskFormerHead):
 
         return loss_dict
 
+    def _merge_gt_with_gt(self, gt_rels_list1, gt_rels_list2):
+        gt_rels_list = []
+        for gt_rels1, gt_rels2 in zip(gt_rels_list1, gt_rels_list2):
+            assert gt_rels1.shape[0] == gt_rels2.shape[0]
+            gt_rels = []
+            for idx in range(gt_rels1.shape[0]):
+                gt_rel1 = gt_rels1[idx]
+                gt_rel2 = gt_rels2[idx]
+                assert gt_rel1[0] == gt_rel1[0]
+                assert gt_rel1[1] == gt_rel1[1]
+                if gt_rel1[2] == gt_rel2[2]:
+                    gt_rels.append(gt_rel1)
+                else:
+                    gt_rels.append(gt_rel1)
+                    gt_rels.append(gt_rel2)
+            gt_rels = torch.stack(gt_rels, dim=0)
+            gt_rels_list.append(gt_rels)
+        return gt_rels_list
+
+    def _merge_pred_with_pred(self,
+                              s_cls_scores1, o_cls_scores1, r_cls_scores1,
+                              s_bbox_preds1, o_bbox_preds1,
+                              s_mask_preds1, o_mask_preds1,
+                              s_cls_scores2, o_cls_scores2, r_cls_scores2,
+                              s_bbox_preds2, o_bbox_preds2,
+                              s_mask_preds2, o_mask_preds2, img_metas):
+
+        results = []
+        for img_idx in range(len(img_metas)):
+            img_shape = img_metas[img_idx]['img_shape']
+            scale_factor = img_metas[img_idx]['scale_factor']
+            # 1. get result1
+            rel_pairs1, labels1, scores1, bboxes1, masks1, r_labels1, r_scores1, r_dists1 = \
+                self._get_results_single_easy(
+                    s_cls_scores1[img_idx].detach(), o_cls_scores1[img_idx].detach(), r_cls_scores1[img_idx].detach(),  # noqa
+                    s_bbox_preds1[img_idx].detach(), o_bbox_preds1[img_idx].detach(),  # noqa
+                    s_mask_preds1[img_idx].detach(), o_mask_preds1[img_idx].detach(),  # noqa
+                    img_shape, scale_factor, rescale=False)
+            num1 = rel_pairs1.shape[0]
+            # 2. get result2
+            rel_pairs2, labels2, scores2, bboxes2, masks2, r_labels2, r_scores2, r_dists2 = \
+                self._get_results_single_easy(
+                    s_cls_scores2[img_idx].detach(), o_cls_scores2[img_idx].detach(), r_cls_scores2[img_idx].detach(),  # noqa
+                    s_bbox_preds2[img_idx].detach(), o_bbox_preds2[img_idx].detach(),  # noqa
+                    s_mask_preds2[img_idx].detach(), o_mask_preds2[img_idx].detach(),  # noqa
+                    img_shape, scale_factor, rescale=False)
+            num2 = rel_pairs2.shape[0]
+
+            # 3. reshape result to (n, ...)
+            labels1 = labels1.reshape((2, num1)).permute((1, 0))
+            scores1 = scores1.reshape((2, num1)).permute((1, 0))
+            bboxes1 = bboxes1.reshape((2, num1, 5)).permute((1, 0, 2))
+            h, w = masks1.shape[-2:]
+            masks1 = masks1.reshape((2, num1, h, w)).permute((1, 0, 2, 3))
+
+            labels2 = labels2.reshape((2, num2)).permute((1, 0))
+            scores2 = scores2.reshape((2, num1)).permute((1, 0))
+            bboxes2 = bboxes2.reshape((2, num2, 5)).permute((1, 0, 2))
+            h, w = masks2.shape[-2:]
+            masks2 = masks2.reshape((2, num2, h, w)).permute((1, 0, 2, 3))
+
+            # 4. concat result1 and result2
+            labels_all = torch.cat((labels1, labels2), dim=0)
+            scores_all = torch.cat((scores1, scores2), dim=0)
+            bboxes_all = torch.cat((bboxes1, bboxes2), dim=0)
+            masks_all = torch.cat((masks1, masks2), dim=0)
+            r_labels_all = torch.cat((r_labels1, r_labels2), dim=0)
+            r_scores_all = torch.cat((r_scores1, r_scores2), dim=0)
+            r_dists_all = torch.cat((r_dists1, r_dists2), dim=0)
+
+            # 5. re-arrange based on r_scores, output r_idxes
+            r_idxes = torch.argsort(r_scores_all, dim=0, descending=True)
+
+            # 6. re-arrange based on r_idxes
+            labels = labels_all[r_idxes]
+            scores = scores_all[r_idxes]
+            bboxes = bboxes_all[r_idxes]
+            masks = masks_all[r_idxes]
+            r_labels = r_labels_all[r_idxes]
+            r_scores = r_scores_all[r_idxes]
+            r_dists = r_dists_all[r_idxes]
+
+            # 7. dedup
+            keep_tri = self._dedup_triplets_based_on_iou(
+                labels[:, 0], labels[:, 1], r_labels, masks[:, 0], masks[:, 1])
+            rel_pairs = torch.asarray([i for i in range(keep_tri.sum()*2)],
+                                      dtype=r_labels.dtype, device=r_labels.device)
+            labels = labels[keep_tri]
+            scores = scores[keep_tri]
+            bboxes = bboxes[keep_tri]
+            masks = masks[keep_tri]
+            r_labels = r_labels[keep_tri]
+            r_scores = r_scores[keep_tri]
+            r_dists = r_dists[keep_tri]
+
+            # 8. reshape to (n*2, ...)
+            labels = labels.permute((1, 0)).reshape((-1))
+            scores = scores.permute((1, 0)).reshape((-1))
+            bboxes = bboxes.permute((1, 0, 2)).reshape((-1, 5))
+            masks = masks.permute((1, 0, 2, 3)).reshape((-1, h, w))
+
+            results.append([rel_pairs, labels, scores, bboxes,
+                           masks, r_labels, r_scores, r_dists])
+        return results
+
+    def _merge_gt_with_pred(self, gt_labels_list, gt_bboxes_list, gt_masks_list, gt_rels_list,
+                            pred_results, img_metas):
+        merge_gt_labels_list = []
+        merge_gt_bboxes_list = []
+        merge_gt_masks_list = []
+        merge_gt_rels_list = []
+        for img_idx in range(len(img_metas)):
+            rel_pairs, labels, scores, det_bboxes, output_masks, r_labels, r_scores, r_dists = \
+                pred_results[img_idx]
+
+            merge_gt_labels = torch.cat(
+                (gt_labels_list[img_idx], labels), dim=0)
+            merge_gt_bboxes = torch.cat(
+                (gt_bboxes_list[img_idx], det_bboxes[:, :4]), dim=0)
+            merge_gt_masks = torch.cat(
+                (gt_masks_list[img_idx], output_masks), dim=0)
+            if rel_pairs.shape[0] > 0:
+                rel_pairs += gt_labels_list[img_idx].shape[0]
+                rels = torch.cat((rel_pairs, r_labels.unsqueeze(1)), dim=1)
+                merge_gt_rels = torch.cat((gt_rels_list[img_idx], rels), dim=0)
+            else:
+                merge_gt_rels = gt_rels_list[img_idx]
+
+            merge_gt_labels_list.append(merge_gt_labels)
+            merge_gt_bboxes_list.append(merge_gt_bboxes)
+            merge_gt_masks_list.append(merge_gt_masks)
+            merge_gt_rels_list.append(merge_gt_rels)
+        return merge_gt_labels_list, merge_gt_bboxes_list, merge_gt_masks_list, merge_gt_rels_list
+
+    @force_fp32(apply_to=('global_all_cls_scores', 'global_all_bbox_preds', 'global_all_mask_preds',
+                          'high2low_all_cls_scores', 'high2low_all_bbox_preds', 'high2low_all_mask_preds',
+                          'low2high_all_cls_scores', 'low2high_all_bbox_preds', 'low2high_all_mask_preds'))
+    def loss_global(self,
+                    global_all_cls_scores,
+                    global_all_bbox_preds,
+                    global_all_mask_preds,
+                    high2low_all_cls_scores,
+                    high2low_all_bbox_preds,
+                    high2low_all_mask_preds,
+                    low2high_all_cls_scores,
+                    low2high_all_bbox_preds,
+                    low2high_all_mask_preds,
+                    gt_labels_list,
+                    gt_bboxes_list,
+                    gt_masks_list,
+                    gt_rels_list,
+                    high2low_gt_rels_list,
+                    low2high_gt_rels_list,
+                    img_metas,
+                    gt_bboxes_ignore=None):
+        global_all_s_cls_scores = global_all_cls_scores['sub']
+        global_all_o_cls_scores = global_all_cls_scores['obj']
+        global_all_r_cls_scores = global_all_cls_scores['rel']
+        global_all_s_bbox_preds = global_all_bbox_preds['sub']
+        global_all_o_bbox_preds = global_all_bbox_preds['obj']
+        global_all_s_mask_preds = global_all_mask_preds['sub']
+        global_all_o_mask_preds = global_all_mask_preds['obj']
+
+        high2low_all_s_cls_scores = high2low_all_cls_scores['sub']
+        high2low_all_o_cls_scores = high2low_all_cls_scores['obj']
+        high2low_all_r_cls_scores = high2low_all_cls_scores['rel']
+        high2low_all_s_bbox_preds = high2low_all_bbox_preds['sub']
+        high2low_all_o_bbox_preds = high2low_all_bbox_preds['obj']
+        high2low_all_s_mask_preds = high2low_all_mask_preds['sub']
+        high2low_all_o_mask_preds = high2low_all_mask_preds['obj']
+
+        low2high_all_s_cls_scores = low2high_all_cls_scores['sub']
+        low2high_all_o_cls_scores = low2high_all_cls_scores['obj']
+        low2high_all_r_cls_scores = low2high_all_cls_scores['rel']
+        low2high_all_s_bbox_preds = low2high_all_bbox_preds['sub']
+        low2high_all_o_bbox_preds = low2high_all_bbox_preds['obj']
+        low2high_all_s_mask_preds = low2high_all_mask_preds['sub']
+        low2high_all_o_mask_preds = low2high_all_mask_preds['obj']
+
+        num_dec_layers = len(high2low_all_s_cls_scores)
+        all_gt_bboxes_ignore_list = [
+            gt_bboxes_ignore for _ in range(num_dec_layers)]
+        img_metas_list = [img_metas for _ in range(num_dec_layers)]
+
+        #####################
+        # global gt prepare #
+        #####################
+        # 1. merge high2low and low2high gt
+        global_gt_rels_list = self._merge_gt_with_gt(
+            high2low_gt_rels_list, low2high_gt_rels_list)
+        # 2. merge high2low and low2high pred
+        pred_results = self._merge_pred_with_pred(
+            high2low_all_s_cls_scores[-1], high2low_all_o_cls_scores[-1], high2low_all_r_cls_scores[-1],
+            high2low_all_s_bbox_preds[-1], high2low_all_o_bbox_preds[-1],
+            high2low_all_s_mask_preds[-1], high2low_all_o_mask_preds[-1],
+            low2high_all_s_cls_scores[-1], low2high_all_o_cls_scores[-1], low2high_all_r_cls_scores[-1],
+            low2high_all_s_bbox_preds[-1], low2high_all_o_bbox_preds[-1],
+            low2high_all_s_mask_preds[-1], low2high_all_o_mask_preds[-1],
+            img_metas)
+        # 3. merge gt and pred
+        global_gt_labels_list, global_gt_bboxes_list, global_gt_masks_list, global_gt_rels_list = self._merge_gt_with_pred(
+            gt_labels_list, gt_bboxes_list, gt_masks_list, global_gt_rels_list, pred_results, img_metas)
+
+        global_all_gt_labels_list = [
+            global_gt_labels_list for _ in range(num_dec_layers)]
+        global_all_gt_bboxes_list = [
+            global_gt_bboxes_list for _ in range(num_dec_layers)]
+        global_all_gt_masks_list = [
+            global_gt_masks_list for _ in range(num_dec_layers)]
+        global_all_gt_rels_list = [
+            global_gt_rels_list for _ in range(num_dec_layers)]
+
+        loss_dict = dict()
+
+        ##########
+        # global #
+        ##########
+        global_s_losses_cls, global_o_losses_cls, global_r_losses_cls, \
+            global_s_losses_bbox, global_o_losses_bbox, global_s_losses_iou, global_o_losses_iou, \
+            global_s_losses_focal, global_o_losses_focal, global_s_losses_dice, global_o_losses_dice = \
+            multi_apply(self.loss_single,
+                        global_all_s_cls_scores, global_all_o_cls_scores, global_all_r_cls_scores,
+                        global_all_s_bbox_preds, global_all_o_bbox_preds,
+                        global_all_s_mask_preds, global_all_o_mask_preds,
+                        global_all_gt_rels_list, global_all_gt_bboxes_list, global_all_gt_labels_list,
+                        global_all_gt_masks_list, img_metas_list, all_gt_bboxes_ignore_list)
+
+        # loss from the last decoder layer
+        loss_dict['global_s_loss_cls'] = global_s_losses_cls[-1]
+        loss_dict['global_o_loss_cls'] = global_o_losses_cls[-1]
+        loss_dict['global_r_loss_cls'] = global_r_losses_cls[-1]
+        loss_dict['global_s_loss_bbox'] = global_s_losses_bbox[-1]
+        loss_dict['global_o_loss_bbox'] = global_o_losses_bbox[-1]
+        loss_dict['global_s_loss_iou'] = global_s_losses_iou[-1]
+        loss_dict['global_o_loss_iou'] = global_o_losses_iou[-1]
+        if self.use_mask:
+            loss_dict['global_s_loss_focal'] = global_s_losses_focal[-1]
+            loss_dict['global_s_loss_dice'] = global_s_losses_dice[-1]
+            loss_dict['global_o_loss_focal'] = global_o_losses_focal[-1]
+            loss_dict['global_o_loss_dice'] = global_o_losses_dice[-1]
+
+        # loss from other decoder layers
+        num_dec_layer = 0
+        for global_s_loss_cls_i, global_o_loss_cls_i, global_r_loss_cls_i, \
+            global_s_loss_bbox_i, global_o_loss_bbox_i, \
+            global_s_loss_iou_i, global_o_loss_iou_i, \
+            global_s_loss_focal_i, global_o_loss_focal_i, \
+            global_s_loss_dice_i, global_o_loss_dice_i in zip(global_s_losses_cls[:-1], global_o_losses_cls[:-1], global_r_losses_cls[:-1],
+                                                                global_s_losses_bbox[:-1], global_o_losses_bbox[:-1],  # noqa
+                                                                global_s_losses_iou[:- 1], global_o_losses_iou[:-1],  # noqa
+                                                                global_s_losses_focal[:- 1], global_s_losses_dice[:-1],  # noqa
+                                                                global_o_losses_focal[:-1], global_o_losses_dice[:-1]):  # noqa
+            loss_dict[f'd{num_dec_layer}.global_s_loss_cls'] = global_s_loss_cls_i
+            loss_dict[f'd{num_dec_layer}.global_o_loss_cls'] = global_o_loss_cls_i
+            loss_dict[f'd{num_dec_layer}.global_r_loss_cls'] = global_r_loss_cls_i
+            loss_dict[f'd{num_dec_layer}.global_s_loss_bbox'] = global_s_loss_bbox_i
+            loss_dict[f'd{num_dec_layer}.global_o_loss_bbox'] = global_o_loss_bbox_i
+            loss_dict[f'd{num_dec_layer}.global_s_loss_iou'] = global_s_loss_iou_i
+            loss_dict[f'd{num_dec_layer}.global_o_loss_iou'] = global_o_loss_iou_i
+            loss_dict[f'd{num_dec_layer}.global_s_loss_focal'] = global_s_loss_focal_i
+            loss_dict[f'd{num_dec_layer}.global_o_loss_focal'] = global_o_loss_focal_i
+            loss_dict[f'd{num_dec_layer}.global_s_loss_dice'] = global_s_loss_dice_i
+            loss_dict[f'd{num_dec_layer}.global_o_loss_dice'] = global_o_loss_dice_i
+            num_dec_layer += 1
+
+        return loss_dict
+
     def forward_head(self, decoder_out, mask_feature, attn_mask_target_size, decoder_layer_idx=0,
                      transformer_decoder=None, rel_cls_embed=None):
         """Forward for head part which is called after every decoder layer.
@@ -660,11 +931,19 @@ class PSGMask2FormerMultiDecoderHead(PSGMaskFormerHead):
                 (1, batch_size, 1))
             query_embed = self.query_embed.weight.unsqueeze(1).repeat(
                 (1, batch_size, 1))
+            if self.optim_global_decoder:
+                global_query_feat = query_feat
+                global_query_embed = query_embed
             high2low_query_feat = query_feat
             high2low_query_embed = query_embed
             low2high_query_feat = query_feat
             low2high_query_embed = query_embed
         else:
+            if self.optim_global_decoder:
+                global_query_feat = self.global_query_feat.weight.unsqueeze(1).repeat(
+                    (1, batch_size, 1))
+                global_query_embed = self.global_query_embed.weight.unsqueeze(1).repeat(
+                    (1, batch_size, 1))
             high2low_query_feat = self.high2low_query_feat.weight.unsqueeze(1).repeat(
                 (1, batch_size, 1))
             high2low_query_embed = self.high2low_query_embed.weight.unsqueeze(1).repeat(
@@ -674,6 +953,10 @@ class PSGMask2FormerMultiDecoderHead(PSGMaskFormerHead):
             low2high_query_embed = self.low2high_query_embed.weight.unsqueeze(1).repeat(
                 (1, batch_size, 1))
 
+        if self.optim_global_decoder:
+            global_cls_pred_list = []
+            global_bbox_pred_list = []
+            global_mask_pred_list = []
         high2low_cls_pred_list = []
         high2low_bbox_pred_list = []
         high2low_mask_pred_list = []
@@ -682,6 +965,14 @@ class PSGMask2FormerMultiDecoderHead(PSGMaskFormerHead):
         low2high_mask_pred_list = []
 
         if self.decoder_cfg.get('use_query_pred', True):
+            if self.optim_global_decoder:
+                cls_pred, bbox_pred, mask_pred, global_cross_attn_mask = self.forward_head(
+                    global_query_feat, mask_features, multi_scale_memorys[
+                        0].shape[-2:], decoder_layer_idx=0,
+                    transformer_decoder=self.global_transformer_decoder, rel_cls_embed=self.global_rel_cls_embed)
+                global_cls_pred_list.append(cls_pred)
+                global_bbox_pred_list.append(bbox_pred)
+                global_mask_pred_list.append(mask_pred)
             cls_pred, bbox_pred, mask_pred, high2low_cross_attn_mask = self.forward_head(
                 high2low_query_feat, mask_features, multi_scale_memorys[
                     0].shape[-2:], decoder_layer_idx=0,
@@ -697,6 +988,8 @@ class PSGMask2FormerMultiDecoderHead(PSGMaskFormerHead):
             low2high_bbox_pred_list.append(bbox_pred)
             low2high_mask_pred_list.append(mask_pred)
         else:
+            if self.optim_global_decoder:
+                global_cross_attn_mask = None
             high2low_cross_attn_mask = None
             low2high_cross_attn_mask = None
 
@@ -709,6 +1002,9 @@ class PSGMask2FormerMultiDecoderHead(PSGMaskFormerHead):
         for i in range(self.num_transformer_decoder_layers):
             level_idx = i % self.num_transformer_feat_level
             # if a mask is all True(all background), then set it all False.
+            if self.optim_global_decoder and (global_cross_attn_mask is not None):
+                global_cross_attn_mask[torch.where(
+                    global_cross_attn_mask.sum(-1) == global_cross_attn_mask.shape[-1])] = False
             if high2low_cross_attn_mask is not None:
                 high2low_cross_attn_mask[torch.where(
                     high2low_cross_attn_mask.sum(-1) == high2low_cross_attn_mask.shape[-1])] = False
@@ -717,6 +1013,8 @@ class PSGMask2FormerMultiDecoderHead(PSGMaskFormerHead):
                     low2high_cross_attn_mask.sum(-1) == low2high_cross_attn_mask.shape[-1])] = False
 
             # cross_attn + self_attn
+            if self.optim_global_decoder:
+                global_layer = self.global_transformer_decoder.layers[i]
             high2low_layer = self.high2low_transformer_decoder.layers[i]
             low2high_layer = self.low2high_transformer_decoder.layers[i]
             # cross_attn_mask is prepared for cross attention
@@ -724,11 +1022,26 @@ class PSGMask2FormerMultiDecoderHead(PSGMaskFormerHead):
             # for self attention, to decide whether interact triplet query
             # with relation query.
             if i in ignore_masked_attention_layers:
+                if self.optim_global_decoder:
+                    global_cross_attn_mask = None
                 high2low_cross_attn_mask = None
                 low2high_cross_attn_mask = None
             self_attn_mask = None
+            if self.optim_global_decoder:
+                global_attn_masks = [global_cross_attn_mask, self_attn_mask]
             high2low_attn_masks = [high2low_cross_attn_mask, self_attn_mask]
             low2high_attn_masks = [low2high_cross_attn_mask, self_attn_mask]
+            if self.optim_global_decoder:
+                global_query_feat = global_layer(
+                    query=global_query_feat,
+                    key=decoder_inputs[level_idx],
+                    value=decoder_inputs[level_idx],
+                    query_pos=global_query_embed,
+                    key_pos=decoder_positional_encodings[level_idx],
+                    attn_masks=global_attn_masks,
+                    query_key_padding_mask=None,
+                    # here we do not apply masking on padded region
+                    key_padding_mask=None)
             high2low_query_feat = high2low_layer(
                 query=high2low_query_feat,
                 key=decoder_inputs[level_idx],
@@ -750,6 +1063,14 @@ class PSGMask2FormerMultiDecoderHead(PSGMaskFormerHead):
                 # here we do not apply masking on padded region
                 key_padding_mask=None)
 
+            if self.optim_global_decoder:
+                cls_pred, bbox_pred, mask_pred, global_cross_attn_mask = self.forward_head(
+                    global_query_feat, mask_features, multi_scale_memorys[(
+                        i + 1) % self.num_transformer_feat_level].shape[-2:],
+                    decoder_layer_idx=i+1, transformer_decoder=self.global_transformer_decoder, rel_cls_embed=self.global_rel_cls_embed)
+                global_cls_pred_list.append(cls_pred)
+                global_bbox_pred_list.append(bbox_pred)
+                global_mask_pred_list.append(mask_pred)
             cls_pred, bbox_pred, mask_pred, high2low_cross_attn_mask = self.forward_head(
                 high2low_query_feat, mask_features, multi_scale_memorys[(
                     i + 1) % self.num_transformer_feat_level].shape[-2:],
@@ -765,10 +1086,18 @@ class PSGMask2FormerMultiDecoderHead(PSGMaskFormerHead):
             low2high_bbox_pred_list.append(bbox_pred)
             low2high_mask_pred_list.append(mask_pred)
 
+        if self.optim_global_decoder:
+            global_all_cls_scores, global_all_bbox_preds, global_all_mask_preds = self.pack_model_outputs(
+                global_cls_pred_list, global_bbox_pred_list, global_mask_pred_list)
         high2low_all_cls_scores, high2low_all_bbox_preds, high2low_all_mask_preds = self.pack_model_outputs(
             high2low_cls_pred_list, high2low_bbox_pred_list, high2low_mask_pred_list)
         low2high_all_cls_scores, low2high_all_bbox_preds, low2high_all_mask_preds = self.pack_model_outputs(
             low2high_cls_pred_list, low2high_bbox_pred_list, low2high_mask_pred_list)
+
+        if self.optim_global_decoder:
+            return global_all_cls_scores, global_all_bbox_preds, global_all_mask_preds, \
+                high2low_all_cls_scores, high2low_all_bbox_preds, high2low_all_mask_preds, \
+                low2high_all_cls_scores, low2high_all_bbox_preds, low2high_all_mask_preds
 
         if os.getenv('MERGE_PREDICT', 'false').lower() == 'true' and not self.training:
             merge_type = 'soft_merge'
@@ -915,14 +1244,26 @@ class PSGMask2FormerMultiDecoderHead(PSGMaskFormerHead):
         # not consider ignoring bboxes
         assert gt_bboxes_ignore is None
 
+        outs = self(feats, img_metas)
         # forward
-        high2low_all_cls_scores, high2low_all_bbox_preds, high2low_all_mask_preds, low2high_all_cls_scores, low2high_all_bbox_preds, low2high_all_mask_preds = self(
-            feats, img_metas)
+        if self.optim_global_decoder:
+            assert len(outs) == 9, 'If optim_global_decoder=True, forward output number should be 9, but now is {}'.format(
+                len(outs))
+        else:
+            assert len(outs) == 6, 'If optim_global_decoder=False, forward output number should be 6, but now is {}'.format(
+                len(outs))
 
+        gts = (gt_labels, gt_bboxes, gt_masks, gt_rels, high2low_gt_rels, low2high_gt_rels, img_metas, gt_bboxes_ignore)  # noqa
         # loss
-        loss_inputs = (high2low_all_cls_scores, high2low_all_bbox_preds, high2low_all_mask_preds, low2high_all_cls_scores, low2high_all_bbox_preds, low2high_all_mask_preds) + \
-            (gt_labels, gt_bboxes, gt_masks, gt_rels, high2low_gt_rels, low2high_gt_rels, img_metas, gt_bboxes_ignore)  # noqa
+        losses_global = dict()
+        if self.optim_global_decoder:
+            loss_inputs = outs[3:9] + gts
+            loss_global_inputs = outs + gts
+            losses_global = self.loss_global(*loss_global_inputs)
+        else:
+            loss_inputs = outs + gts
         losses = self.loss(*loss_inputs)
+        losses.update(losses_global)
 
         return losses
 
@@ -946,11 +1287,162 @@ class PSGMask2FormerMultiDecoderHead(PSGMaskFormerHead):
         outs = self(feats, img_metas, **kwargs)
         if len(outs) == 6:
             if self.test_forward_output_type == 'high2low':
-                outs = outs[:3]
+                outs = outs[0:3]
             elif self.test_forward_output_type == 'low2high':
-                outs = outs[3:]
+                outs = outs[3:6]
+        if len(outs) == 9:
+            if self.test_forward_output_type == 'global':
+                outs = outs[0:3]
+            elif self.test_forward_output_type == 'high2low':
+                outs = outs[3:6]
+            elif self.test_forward_output_type == 'low2high':
+                outs = outs[6:9]
         results_list = self.get_results(*outs, img_metas, rescale=rescale)
         return results_list
+
+    def _dedup_triplets_based_on_iou(self, s_labels, o_labels, r_labels, s_mask_pred, o_mask_pred):
+        relation_classes = defaultdict(lambda: [])
+        for k, (s_l, o_l, r_l) in enumerate(zip(s_labels, o_labels, r_labels)):
+            relation_classes[(s_l.item(), o_l.item(),
+                              r_l.item())].append(k)
+        s_binary_masks = s_mask_pred.to(torch.float).flatten(1)
+        o_binary_masks = o_mask_pred.to(torch.float).flatten(1)
+
+        def dedup_triplets(triplets_ids, s_binary_masks, o_binary_masks, keep_tri):
+            while len(triplets_ids) > 1:
+                base_s_mask = s_binary_masks[triplets_ids[0]].unsqueeze(0)
+                base_o_mask = o_binary_masks[triplets_ids[0]].unsqueeze(0)
+                other_s_masks = s_binary_masks[triplets_ids[1:]]
+                other_o_masks = o_binary_masks[triplets_ids[1:]]
+                # calculate ious
+                s_ious = base_s_mask.mm(other_s_masks.transpose(
+                    0, 1))/((base_s_mask+other_s_masks) > 0).sum(-1)
+                o_ious = base_o_mask.mm(other_o_masks.transpose(
+                    0, 1))/((base_o_mask+other_o_masks) > 0).sum(-1)
+                ids_left = []
+                for s_iou, o_iou, other_id in zip(s_ious[0], o_ious[0], triplets_ids[1:]):
+                    if (s_iou > 0.5) & (o_iou > 0.5):
+                        keep_tri[other_id] = False
+                    else:
+                        ids_left.append(other_id)
+                triplets_ids = ids_left
+            return keep_tri
+
+        keep_tri = torch.ones_like(
+            r_labels, dtype=torch.bool, device=r_labels.device)
+        for triplets_ids in relation_classes.values():
+            if len(triplets_ids) > 1:
+                keep_tri = dedup_triplets(
+                    triplets_ids, s_binary_masks, o_binary_masks, keep_tri)
+
+        return keep_tri
+
+    def _get_results_single_easy(self,
+                                 s_cls_score, o_cls_score, r_cls_score,
+                                 s_bbox_pred, o_bbox_pred,
+                                 s_mask_pred, o_mask_pred,
+                                 img_shape, scale_factor, rescale=False):
+
+        # because input is half size of mask, here should follow pre-process, not post-process.
+        # mask_size = (round(img_shape[0] / scale_factor[1]),
+        #              round(img_shape[1] / scale_factor[0]))
+        mask_size = (img_shape[0] // 2, img_shape[1] // 2)
+        max_per_img = self.num_queries
+
+        ###################
+        # sub/obj/rel cls #
+        ###################
+        s_logits = F.softmax(s_cls_score, dim=-1)[..., :-1]
+        o_logits = F.softmax(o_cls_score, dim=-1)[..., :-1]
+        s_scores, s_labels = s_logits.max(-1)
+        o_scores, o_labels = o_logits.max(-1)
+
+        r_lgs = F.softmax(r_cls_score, dim=-1)
+        r_logits = r_lgs[..., 1:]
+        r_scores, r_indexes = r_logits.reshape(-1).topk(max_per_img)
+        r_labels = r_indexes % self.num_relations + 1
+        triplet_index = r_indexes // self.num_relations
+
+        s_scores = s_scores[triplet_index]
+        s_labels = s_labels[triplet_index]
+        s_bbox_pred = s_bbox_pred[triplet_index]
+        s_mask_pred = s_mask_pred[triplet_index]
+
+        o_scores = o_scores[triplet_index]
+        o_labels = o_labels[triplet_index]
+        o_bbox_pred = o_bbox_pred[triplet_index]
+        o_mask_pred = o_mask_pred[triplet_index]
+
+        r_dists = r_lgs.reshape(-1, self.num_relations + 1)[triplet_index]
+
+        # same as post-process
+        keep = (s_scores > 0.5) & (o_scores > 0.5) & (r_scores > 0.3)
+        s_scores = s_scores[keep]
+        s_labels = s_labels[keep]
+        s_bbox_pred = s_bbox_pred[keep]
+        s_mask_pred = s_mask_pred[keep]
+        o_scores = o_scores[keep]
+        o_labels = o_labels[keep]
+        o_bbox_pred = o_bbox_pred[keep]
+        o_mask_pred = o_mask_pred[keep]
+        r_scores = r_scores[keep]
+        r_labels = r_labels[keep]
+        r_dists = r_dists[keep]
+
+        ################
+        # sub/obj bbox #
+        ################
+        s_det_bboxes = bbox_cxcywh_to_xyxy(s_bbox_pred)
+        s_det_bboxes[:, 0::2] = s_det_bboxes[:, 0::2] * img_shape[1]
+        s_det_bboxes[:, 1::2] = s_det_bboxes[:, 1::2] * img_shape[0]
+        s_det_bboxes[:, 0::2].clamp_(min=0, max=img_shape[1])
+        s_det_bboxes[:, 1::2].clamp_(min=0, max=img_shape[0])
+        if rescale:
+            s_det_bboxes /= s_det_bboxes.new_tensor(scale_factor)
+        s_det_bboxes = torch.cat((s_det_bboxes, s_scores.unsqueeze(1)), -1)
+
+        o_det_bboxes = bbox_cxcywh_to_xyxy(o_bbox_pred)
+        o_det_bboxes[:, 0::2] = o_det_bboxes[:, 0::2] * img_shape[1]
+        o_det_bboxes[:, 1::2] = o_det_bboxes[:, 1::2] * img_shape[0]
+        o_det_bboxes[:, 0::2].clamp_(min=0, max=img_shape[1])
+        o_det_bboxes[:, 1::2].clamp_(min=0, max=img_shape[0])
+        if rescale:
+            o_det_bboxes /= o_det_bboxes.new_tensor(scale_factor)
+        o_det_bboxes = torch.cat((o_det_bboxes, o_scores.unsqueeze(1)), -1)
+
+        ################
+        # sub/obj mask #
+        ################
+        s_mask_pred = F.interpolate(s_mask_pred.unsqueeze(1),
+                                    size=mask_size).squeeze(1)
+        o_mask_pred = F.interpolate(o_mask_pred.unsqueeze(1),
+                                    size=mask_size).squeeze(1)
+        s_mask_pred = torch.sigmoid(s_mask_pred) > 0.85
+        o_mask_pred = torch.sigmoid(o_mask_pred) > 0.85
+
+        ### triplets deduplicate ###
+        keep_tri = self._dedup_triplets_based_on_iou(
+            s_labels, o_labels, r_labels, s_mask_pred, o_mask_pred)
+
+        scores = torch.cat((s_scores[keep_tri], o_scores[keep_tri]), 0)
+        # object, (2*n)
+        labels = torch.cat((s_labels[keep_tri], o_labels[keep_tri]), 0)
+        # object bbox, (2*n, 5)
+        det_bboxes = torch.cat(
+            (s_det_bboxes[keep_tri], o_det_bboxes[keep_tri]), 0)
+        # object mask, (2*n, h, w)
+        output_masks = torch.cat(
+            (s_mask_pred[keep_tri], o_mask_pred[keep_tri]), 0)
+        # relation (n)
+        r_labels = r_labels[keep_tri]
+        r_scores = r_scores[keep_tri]
+        r_dists = r_dists[keep_tri]
+        # (n, 2)
+        rel_pairs = torch.arange(keep_tri.sum()*2,
+                                 dtype=r_labels.dtype,
+                                 device=r_labels.device).reshape(2, -1).T
+
+        return rel_pairs, labels, scores, det_bboxes, output_masks, r_labels, r_scores, r_dists
 
 
 class MLConv1d(nn.Module):
