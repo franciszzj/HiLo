@@ -57,6 +57,7 @@ class PSGMask2FormerHead(PSGMaskFormerHead):
                  transformer_decoder=None,
                  decoder_cfg=dict(use_query_pred=True,
                                   ignore_masked_attention_layers=[]),
+                 aux_loss_list=[0, 1, 2, 3, 4, 5, 6, 7],
                  sub_loss_cls=dict(type='CrossEntropyLoss',
                                    use_sigmoid=False,
                                    loss_weight=1.0,
@@ -98,6 +99,7 @@ class PSGMask2FormerHead(PSGMaskFormerHead):
         self.use_decoder_for_relation_query = use_decoder_for_relation_query
         self.mask_self_attn_interact_of_diff_query_types = mask_self_attn_interact_of_diff_query_types
         self.decoder_cfg = decoder_cfg
+        self.aux_loss_list = aux_loss_list
         self.train_cfg = train_cfg
         self.test_cfg = test_cfg
 
@@ -528,12 +530,15 @@ class PSGMask2FormerHead(PSGMaskFormerHead):
             else:
                 query_feat = all_query_feat
 
-            cls_pred, bbox_pred, mask_pred, cross_attn_mask = self.forward_head(
-                query_feat, relation_query_feat, mask_features, multi_scale_memorys[
-                    (i + 1) % self.num_transformer_feat_level].shape[-2:], decoder_layer_idx=i+1)
-            cls_pred_list.append(cls_pred)
-            bbox_pred_list.append(bbox_pred)
-            mask_pred_list.append(mask_pred)
+            if (i in self.aux_loss_list) or (i+1 == self.num_transformer_decoder_layers):
+                cls_pred, bbox_pred, mask_pred, cross_attn_mask = self.forward_head(
+                    query_feat, relation_query_feat, mask_features, multi_scale_memorys[
+                        (i + 1) % self.num_transformer_feat_level].shape[-2:], decoder_layer_idx=i+1)
+                cls_pred_list.append(cls_pred)
+                bbox_pred_list.append(bbox_pred)
+                mask_pred_list.append(mask_pred)
+            else:
+                cross_attn_mask = None
 
         all_s_cls_scores = []
         all_o_cls_scores = []
