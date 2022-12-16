@@ -55,6 +55,7 @@ class PSGMask2FormerMultiDecoderHead(PSGMaskFormerHead):
                  use_decoder_parameter_mapping=False,
                  decoder_parameter_mapping_num_layers=3,
                  optim_global_decoder=False,
+                 aux_loss_list=[0, 1, 2, 3, 4, 5, 6, 7],
                  sub_loss_cls=dict(type='CrossEntropyLoss',
                                    use_sigmoid=False,
                                    loss_weight=1.0,
@@ -99,6 +100,7 @@ class PSGMask2FormerMultiDecoderHead(PSGMaskFormerHead):
         self.use_decoder_parameter_mapping = use_decoder_parameter_mapping
         self.decoder_parameter_mapping_num_layers = decoder_parameter_mapping_num_layers
         self.optim_global_decoder = optim_global_decoder
+        self.aux_loss_list = aux_loss_list
         self.train_cfg = train_cfg
         self.test_cfg = test_cfg
 
@@ -581,7 +583,7 @@ class PSGMask2FormerMultiDecoderHead(PSGMaskFormerHead):
             masks1 = masks1.reshape((2, num1, h, w)).permute((1, 0, 2, 3))
 
             labels2 = labels2.reshape((2, num2)).permute((1, 0))
-            scores2 = scores2.reshape((2, num1)).permute((1, 0))
+            scores2 = scores2.reshape((2, num2)).permute((1, 0))
             bboxes2 = bboxes2.reshape((2, num2, 5)).permute((1, 0, 2))
             h, w = masks2.shape[-2:]
             masks2 = masks2.reshape((2, num2, h, w)).permute((1, 0, 2, 3))
@@ -1063,28 +1065,34 @@ class PSGMask2FormerMultiDecoderHead(PSGMaskFormerHead):
                 # here we do not apply masking on padded region
                 key_padding_mask=None)
 
-            if self.optim_global_decoder:
-                cls_pred, bbox_pred, mask_pred, global_cross_attn_mask = self.forward_head(
-                    global_query_feat, mask_features, multi_scale_memorys[(
+            if (i in self.aux_loss_list) or (i+1 == self.num_transformer_decoder_layers):
+                if self.optim_global_decoder:
+                    cls_pred, bbox_pred, mask_pred, global_cross_attn_mask = self.forward_head(
+                        global_query_feat, mask_features, multi_scale_memorys[(
+                            i + 1) % self.num_transformer_feat_level].shape[-2:],
+                        decoder_layer_idx=i+1, transformer_decoder=self.global_transformer_decoder, rel_cls_embed=self.global_rel_cls_embed)
+                    global_cls_pred_list.append(cls_pred)
+                    global_bbox_pred_list.append(bbox_pred)
+                    global_mask_pred_list.append(mask_pred)
+                cls_pred, bbox_pred, mask_pred, high2low_cross_attn_mask = self.forward_head(
+                    high2low_query_feat, mask_features, multi_scale_memorys[(
                         i + 1) % self.num_transformer_feat_level].shape[-2:],
-                    decoder_layer_idx=i+1, transformer_decoder=self.global_transformer_decoder, rel_cls_embed=self.global_rel_cls_embed)
-                global_cls_pred_list.append(cls_pred)
-                global_bbox_pred_list.append(bbox_pred)
-                global_mask_pred_list.append(mask_pred)
-            cls_pred, bbox_pred, mask_pred, high2low_cross_attn_mask = self.forward_head(
-                high2low_query_feat, mask_features, multi_scale_memorys[(
-                    i + 1) % self.num_transformer_feat_level].shape[-2:],
-                decoder_layer_idx=i+1, transformer_decoder=self.high2low_transformer_decoder, rel_cls_embed=self.high2low_rel_cls_embed)
-            high2low_cls_pred_list.append(cls_pred)
-            high2low_bbox_pred_list.append(bbox_pred)
-            high2low_mask_pred_list.append(mask_pred)
-            cls_pred, bbox_pred, mask_pred, low2high_cross_attn_mask = self.forward_head(
-                low2high_query_feat, mask_features, multi_scale_memorys[(
-                    i + 1) % self.num_transformer_feat_level].shape[-2:],
-                decoder_layer_idx=i+1, transformer_decoder=self.low2high_transformer_decoder, rel_cls_embed=self.low2high_rel_cls_embed)
-            low2high_cls_pred_list.append(cls_pred)
-            low2high_bbox_pred_list.append(bbox_pred)
-            low2high_mask_pred_list.append(mask_pred)
+                    decoder_layer_idx=i+1, transformer_decoder=self.high2low_transformer_decoder, rel_cls_embed=self.high2low_rel_cls_embed)
+                high2low_cls_pred_list.append(cls_pred)
+                high2low_bbox_pred_list.append(bbox_pred)
+                high2low_mask_pred_list.append(mask_pred)
+                cls_pred, bbox_pred, mask_pred, low2high_cross_attn_mask = self.forward_head(
+                    low2high_query_feat, mask_features, multi_scale_memorys[(
+                        i + 1) % self.num_transformer_feat_level].shape[-2:],
+                    decoder_layer_idx=i+1, transformer_decoder=self.low2high_transformer_decoder, rel_cls_embed=self.low2high_rel_cls_embed)
+                low2high_cls_pred_list.append(cls_pred)
+                low2high_bbox_pred_list.append(bbox_pred)
+                low2high_mask_pred_list.append(mask_pred)
+            else:
+                if self.optim_global_decoder:
+                    global_cross_attn_mask = None
+                high2low_cross_attn_mask = None
+                low2high_cross_attn_mask = None
 
         if self.optim_global_decoder:
             global_all_cls_scores, global_all_bbox_preds, global_all_mask_preds = self.pack_model_outputs(
