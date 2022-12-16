@@ -648,8 +648,9 @@ class PSGMask2FormerMultiDecoderHead(PSGMaskFormerHead):
                 (gt_bboxes_list[img_idx], det_bboxes[:, :4]), dim=0)
             merge_gt_masks = torch.cat(
                 (gt_masks_list[img_idx], output_masks), dim=0)
-            if rel_pairs.shape[0] > 0:
+            if rel_pairs.shape[0] > 0 and r_labels.shape[0] > 0:
                 rel_pairs += gt_labels_list[img_idx].shape[0]
+                rel_pairs = rel_pairs.reshape(2, -1).T
                 rels = torch.cat((rel_pairs, r_labels.unsqueeze(1)), dim=1)
                 merge_gt_rels = torch.cat((gt_rels_list[img_idx], rels), dim=0)
             else:
