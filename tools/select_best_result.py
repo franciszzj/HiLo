@@ -1,14 +1,18 @@
 import os
 import sys
 import json
+import numpy as np
 
 
 def select_best_result(log_json_file, select_type):
     result_list = []
     with open(log_json_file, 'r') as f:
         for line in f:
+            if 'val' not in line:
+                continue
             data = json.loads(line.strip())
             if 'sgdet_recall_R_20' in data.keys() and \
+                    'mode' in data.keys() and \
                     data['mode'] == 'val':
                 R_20 = float(data['sgdet_recall_R_20'])
                 mR_20 = float(data['sgdet_mean_recall_mR_20'])
@@ -39,10 +43,42 @@ def select_best_result(log_json_file, select_type):
     print(best_result_info[3])
 
 
+def select_best_epoch(log_json_file):
+    epoch_list = []
+    loss_list = []
+    with open(log_json_file, 'r') as f:
+        for line in f:
+            if 'val' not in line:
+                continue
+            data = json.loads(line.strip())
+            if 'loss' in data.keys() and \
+                    'mode' in data.keys() and \
+                    data['mode'] == 'val':
+                epoch = data['epoch']
+                loss = data['loss']
+                epoch_list.append(epoch)
+                loss_list.append(loss)
+
+    if len(epoch_list) == 0:
+        print('epoch zero bug.')
+        return
+
+    idx = np.argmin(np.array(loss_list))
+    best_epoch = epoch_list[idx]
+
+    print('##### Best Result for {} #####'.format(log_json_file))
+    print('epoch: {}'.format(best_epoch))
+    print('loss: {:.2f}'.format(loss_list[idx]))
+
+
 if __name__ == '__main__':
     in_file = sys.argv[1]
     try:
         select_type = sys.argv[2]
     except:
         select_type = 'all'
-    select_best_result(in_file, select_type)
+
+    if select_type == 'loss':
+        select_best_epoch(in_file)
+    else:
+        select_best_result(in_file, select_type)
