@@ -6,6 +6,7 @@ import cv2
 import copy
 import random
 import pickle
+import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -24,6 +25,8 @@ from mmdet.models.builder import HEADS, build_loss
 from mmdet.models.dense_heads import AnchorFreeHead
 from openpsg.models.relation_heads.psgmaskformer_head import PSGMaskFormerHead
 from openpsg.models.relation_heads.psgtr_head import MLP
+from openpsg.models.relation_heads.approaches import Result
+from openpsg.models.frameworks.psgtr import triplet2Result
 
 
 @HEADS.register_module()
@@ -526,141 +529,6 @@ class PSGMask2FormerMultiDecoderHead(PSGMaskFormerHead):
             loss_dict['obj_consistency_mask_loss'] = obj_consistency_mask_loss
 
         return loss_dict
-
-    def _merge_gt_with_gt(self, gt_rels_list1, gt_rels_list2):
-        gt_rels_list = []
-        for gt_rels1, gt_rels2 in zip(gt_rels_list1, gt_rels_list2):
-            assert gt_rels1.shape[0] == gt_rels2.shape[0]
-            gt_rels = []
-            for idx in range(gt_rels1.shape[0]):
-                gt_rel1 = gt_rels1[idx]
-                gt_rel2 = gt_rels2[idx]
-                assert gt_rel1[0] == gt_rel1[0]
-                assert gt_rel1[1] == gt_rel1[1]
-                if gt_rel1[2] == gt_rel2[2]:
-                    gt_rels.append(gt_rel1)
-                else:
-                    gt_rels.append(gt_rel1)
-                    gt_rels.append(gt_rel2)
-            gt_rels = torch.stack(gt_rels, dim=0)
-            gt_rels_list.append(gt_rels)
-        return gt_rels_list
-
-    def _merge_pred_with_pred(self,
-                              s_cls_scores1, o_cls_scores1, r_cls_scores1,
-                              s_bbox_preds1, o_bbox_preds1,
-                              s_mask_preds1, o_mask_preds1,
-                              s_cls_scores2, o_cls_scores2, r_cls_scores2,
-                              s_bbox_preds2, o_bbox_preds2,
-                              s_mask_preds2, o_mask_preds2, img_metas):
-
-        results = []
-        for img_idx in range(len(img_metas)):
-            img_shape = img_metas[img_idx]['img_shape']
-            scale_factor = img_metas[img_idx]['scale_factor']
-            # 1. get result1
-            rel_pairs1, labels1, scores1, bboxes1, masks1, r_labels1, r_scores1, r_dists1 = \
-                self._get_results_single_easy(
-                    s_cls_scores1[img_idx].detach(), o_cls_scores1[img_idx].detach(), r_cls_scores1[img_idx].detach(),  # noqa
-                    s_bbox_preds1[img_idx].detach(), o_bbox_preds1[img_idx].detach(),  # noqa
-                    s_mask_preds1[img_idx].detach(), o_mask_preds1[img_idx].detach(),  # noqa
-                    img_shape, scale_factor, rescale=False)
-            num1 = rel_pairs1.shape[0]
-            # 2. get result2
-            rel_pairs2, labels2, scores2, bboxes2, masks2, r_labels2, r_scores2, r_dists2 = \
-                self._get_results_single_easy(
-                    s_cls_scores2[img_idx].detach(), o_cls_scores2[img_idx].detach(), r_cls_scores2[img_idx].detach(),  # noqa
-                    s_bbox_preds2[img_idx].detach(), o_bbox_preds2[img_idx].detach(),  # noqa
-                    s_mask_preds2[img_idx].detach(), o_mask_preds2[img_idx].detach(),  # noqa
-                    img_shape, scale_factor, rescale=False)
-            num2 = rel_pairs2.shape[0]
-
-            # 3. reshape result to (n, ...)
-            labels1 = labels1.reshape((2, num1)).permute((1, 0))
-            scores1 = scores1.reshape((2, num1)).permute((1, 0))
-            bboxes1 = bboxes1.reshape((2, num1, 5)).permute((1, 0, 2))
-            h, w = masks1.shape[-2:]
-            masks1 = masks1.reshape((2, num1, h, w)).permute((1, 0, 2, 3))
-
-            labels2 = labels2.reshape((2, num2)).permute((1, 0))
-            scores2 = scores2.reshape((2, num2)).permute((1, 0))
-            bboxes2 = bboxes2.reshape((2, num2, 5)).permute((1, 0, 2))
-            h, w = masks2.shape[-2:]
-            masks2 = masks2.reshape((2, num2, h, w)).permute((1, 0, 2, 3))
-
-            # 4. concat result1 and result2
-            labels_all = torch.cat((labels1, labels2), dim=0)
-            scores_all = torch.cat((scores1, scores2), dim=0)
-            bboxes_all = torch.cat((bboxes1, bboxes2), dim=0)
-            masks_all = torch.cat((masks1, masks2), dim=0)
-            r_labels_all = torch.cat((r_labels1, r_labels2), dim=0)
-            r_scores_all = torch.cat((r_scores1, r_scores2), dim=0)
-            r_dists_all = torch.cat((r_dists1, r_dists2), dim=0)
-
-            # 5. re-arrange based on r_scores, output r_idxes
-            r_idxes = torch.argsort(r_scores_all, dim=0, descending=True)
-
-            # 6. re-arrange based on r_idxes
-            labels = labels_all[r_idxes]
-            scores = scores_all[r_idxes]
-            bboxes = bboxes_all[r_idxes]
-            masks = masks_all[r_idxes]
-            r_labels = r_labels_all[r_idxes]
-            r_scores = r_scores_all[r_idxes]
-            r_dists = r_dists_all[r_idxes]
-
-            # 7. dedup
-            keep_tri = self._dedup_triplets_based_on_iou(
-                labels[:, 0], labels[:, 1], r_labels, masks[:, 0], masks[:, 1])
-            rel_pairs = torch.asarray([i for i in range(keep_tri.sum()*2)],
-                                      dtype=r_labels.dtype, device=r_labels.device)
-            labels = labels[keep_tri]
-            scores = scores[keep_tri]
-            bboxes = bboxes[keep_tri]
-            masks = masks[keep_tri]
-            r_labels = r_labels[keep_tri]
-            r_scores = r_scores[keep_tri]
-            r_dists = r_dists[keep_tri]
-
-            # 8. reshape to (n*2, ...)
-            labels = labels.permute((1, 0)).reshape((-1))
-            scores = scores.permute((1, 0)).reshape((-1))
-            bboxes = bboxes.permute((1, 0, 2)).reshape((-1, 5))
-            masks = masks.permute((1, 0, 2, 3)).reshape((-1, h, w))
-
-            results.append([rel_pairs, labels, scores, bboxes,
-                           masks, r_labels, r_scores, r_dists])
-        return results
-
-    def _merge_gt_with_pred(self, gt_labels_list, gt_bboxes_list, gt_masks_list, gt_rels_list,
-                            pred_results, img_metas):
-        merge_gt_labels_list = []
-        merge_gt_bboxes_list = []
-        merge_gt_masks_list = []
-        merge_gt_rels_list = []
-        for img_idx in range(len(img_metas)):
-            rel_pairs, labels, scores, det_bboxes, output_masks, r_labels, r_scores, r_dists = \
-                pred_results[img_idx]
-
-            merge_gt_labels = torch.cat(
-                (gt_labels_list[img_idx], labels), dim=0)
-            merge_gt_bboxes = torch.cat(
-                (gt_bboxes_list[img_idx], det_bboxes[:, :4]), dim=0)
-            merge_gt_masks = torch.cat(
-                (gt_masks_list[img_idx], output_masks), dim=0)
-            if rel_pairs.shape[0] > 0 and r_labels.shape[0] > 0:
-                rel_pairs += gt_labels_list[img_idx].shape[0]
-                rel_pairs = rel_pairs.reshape(2, -1).T
-                rels = torch.cat((rel_pairs, r_labels.unsqueeze(1)), dim=1)
-                merge_gt_rels = torch.cat((gt_rels_list[img_idx], rels), dim=0)
-            else:
-                merge_gt_rels = gt_rels_list[img_idx]
-
-            merge_gt_labels_list.append(merge_gt_labels)
-            merge_gt_bboxes_list.append(merge_gt_bboxes)
-            merge_gt_masks_list.append(merge_gt_masks)
-            merge_gt_rels_list.append(merge_gt_rels)
-        return merge_gt_labels_list, merge_gt_bboxes_list, merge_gt_masks_list, merge_gt_rels_list
 
     @force_fp32(apply_to=('global_all_cls_scores', 'global_all_bbox_preds', 'global_all_mask_preds',
                           'high2low_all_cls_scores', 'high2low_all_bbox_preds', 'high2low_all_mask_preds',
@@ -1293,14 +1161,35 @@ class PSGMask2FormerMultiDecoderHead(PSGMaskFormerHead):
             - mask_pred_results (Tensor): Mask logits, shape \
                 (batch_size, num_queries, h, w).
         """
+
+        def _merge_results(outs1, outs2):
+            # gpu
+            results1_list = self.get_results(
+                *outs1, img_metas, rescale=rescale)
+            results2_list = self.get_results(
+                *outs2, img_metas, rescale=rescale)
+            # gpu -> cpu
+            results1_list = [triplet2Result(
+                results1, use_mask=True, eval_pan_rels=False) for results1 in results1_list]
+            results2_list = [triplet2Result(
+                results2, use_mask=True, eval_pan_rels=False) for results2 in results2_list]
+            # cpu
+            results = [merge_results(results1, results2) for results1, results2 in zip(
+                results1_list, results2_list)]
+            return results
+
         outs = self(feats, img_metas, **kwargs)
         if len(outs) == 6:
-            if self.test_forward_output_type == 'high2low':
+            if self.test_forward_output_type == 'merge':
+                return _merge_results(outs[0:3], outs[3:6])
+            elif self.test_forward_output_type == 'high2low':
                 outs = outs[0:3]
             elif self.test_forward_output_type == 'low2high':
                 outs = outs[3:6]
         if len(outs) == 9:
-            if self.test_forward_output_type == 'global':
+            if self.test_forward_output_type == 'merge':
+                return _merge_results(outs[3:6], outs[6:9])
+            elif self.test_forward_output_type == 'global':
                 outs = outs[0:3]
             elif self.test_forward_output_type == 'high2low':
                 outs = outs[3:6]
@@ -1308,150 +1197,6 @@ class PSGMask2FormerMultiDecoderHead(PSGMaskFormerHead):
                 outs = outs[6:9]
         results_list = self.get_results(*outs, img_metas, rescale=rescale)
         return results_list
-
-    def _dedup_triplets_based_on_iou(self, s_labels, o_labels, r_labels, s_mask_pred, o_mask_pred):
-        relation_classes = defaultdict(lambda: [])
-        for k, (s_l, o_l, r_l) in enumerate(zip(s_labels, o_labels, r_labels)):
-            relation_classes[(s_l.item(), o_l.item(),
-                              r_l.item())].append(k)
-        s_binary_masks = s_mask_pred.to(torch.float).flatten(1)
-        o_binary_masks = o_mask_pred.to(torch.float).flatten(1)
-
-        def dedup_triplets(triplets_ids, s_binary_masks, o_binary_masks, keep_tri):
-            while len(triplets_ids) > 1:
-                base_s_mask = s_binary_masks[triplets_ids[0]].unsqueeze(0)
-                base_o_mask = o_binary_masks[triplets_ids[0]].unsqueeze(0)
-                other_s_masks = s_binary_masks[triplets_ids[1:]]
-                other_o_masks = o_binary_masks[triplets_ids[1:]]
-                # calculate ious
-                s_ious = base_s_mask.mm(other_s_masks.transpose(
-                    0, 1))/((base_s_mask+other_s_masks) > 0).sum(-1)
-                o_ious = base_o_mask.mm(other_o_masks.transpose(
-                    0, 1))/((base_o_mask+other_o_masks) > 0).sum(-1)
-                ids_left = []
-                for s_iou, o_iou, other_id in zip(s_ious[0], o_ious[0], triplets_ids[1:]):
-                    if (s_iou > 0.5) & (o_iou > 0.5):
-                        keep_tri[other_id] = False
-                    else:
-                        ids_left.append(other_id)
-                triplets_ids = ids_left
-            return keep_tri
-
-        keep_tri = torch.ones_like(
-            r_labels, dtype=torch.bool, device=r_labels.device)
-        for triplets_ids in relation_classes.values():
-            if len(triplets_ids) > 1:
-                keep_tri = dedup_triplets(
-                    triplets_ids, s_binary_masks, o_binary_masks, keep_tri)
-
-        return keep_tri
-
-    def _get_results_single_easy(self,
-                                 s_cls_score, o_cls_score, r_cls_score,
-                                 s_bbox_pred, o_bbox_pred,
-                                 s_mask_pred, o_mask_pred,
-                                 img_shape, scale_factor, rescale=False):
-
-        # because input is half size of mask, here should follow pre-process, not post-process.
-        # mask_size = (round(img_shape[0] / scale_factor[1]),
-        #              round(img_shape[1] / scale_factor[0]))
-        mask_size = (img_shape[0] // 2, img_shape[1] // 2)
-        max_per_img = self.num_queries
-
-        ###################
-        # sub/obj/rel cls #
-        ###################
-        s_logits = F.softmax(s_cls_score, dim=-1)[..., :-1]
-        o_logits = F.softmax(o_cls_score, dim=-1)[..., :-1]
-        s_scores, s_labels = s_logits.max(-1)
-        o_scores, o_labels = o_logits.max(-1)
-
-        r_lgs = F.softmax(r_cls_score, dim=-1)
-        r_logits = r_lgs[..., 1:]
-        r_scores, r_indexes = r_logits.reshape(-1).topk(max_per_img)
-        r_labels = r_indexes % self.num_relations + 1
-        triplet_index = r_indexes // self.num_relations
-
-        s_scores = s_scores[triplet_index]
-        s_labels = s_labels[triplet_index]
-        s_bbox_pred = s_bbox_pred[triplet_index]
-        s_mask_pred = s_mask_pred[triplet_index]
-
-        o_scores = o_scores[triplet_index]
-        o_labels = o_labels[triplet_index]
-        o_bbox_pred = o_bbox_pred[triplet_index]
-        o_mask_pred = o_mask_pred[triplet_index]
-
-        r_dists = r_lgs.reshape(-1, self.num_relations + 1)[triplet_index]
-
-        # same as post-process
-        keep = (s_scores > 0.5) & (o_scores > 0.5) & (r_scores > 0.3)
-        s_scores = s_scores[keep]
-        s_labels = s_labels[keep]
-        s_bbox_pred = s_bbox_pred[keep]
-        s_mask_pred = s_mask_pred[keep]
-        o_scores = o_scores[keep]
-        o_labels = o_labels[keep]
-        o_bbox_pred = o_bbox_pred[keep]
-        o_mask_pred = o_mask_pred[keep]
-        r_scores = r_scores[keep]
-        r_labels = r_labels[keep]
-        r_dists = r_dists[keep]
-
-        ################
-        # sub/obj bbox #
-        ################
-        s_det_bboxes = bbox_cxcywh_to_xyxy(s_bbox_pred)
-        s_det_bboxes[:, 0::2] = s_det_bboxes[:, 0::2] * img_shape[1]
-        s_det_bboxes[:, 1::2] = s_det_bboxes[:, 1::2] * img_shape[0]
-        s_det_bboxes[:, 0::2].clamp_(min=0, max=img_shape[1])
-        s_det_bboxes[:, 1::2].clamp_(min=0, max=img_shape[0])
-        if rescale:
-            s_det_bboxes /= s_det_bboxes.new_tensor(scale_factor)
-        s_det_bboxes = torch.cat((s_det_bboxes, s_scores.unsqueeze(1)), -1)
-
-        o_det_bboxes = bbox_cxcywh_to_xyxy(o_bbox_pred)
-        o_det_bboxes[:, 0::2] = o_det_bboxes[:, 0::2] * img_shape[1]
-        o_det_bboxes[:, 1::2] = o_det_bboxes[:, 1::2] * img_shape[0]
-        o_det_bboxes[:, 0::2].clamp_(min=0, max=img_shape[1])
-        o_det_bboxes[:, 1::2].clamp_(min=0, max=img_shape[0])
-        if rescale:
-            o_det_bboxes /= o_det_bboxes.new_tensor(scale_factor)
-        o_det_bboxes = torch.cat((o_det_bboxes, o_scores.unsqueeze(1)), -1)
-
-        ################
-        # sub/obj mask #
-        ################
-        s_mask_pred = F.interpolate(s_mask_pred.unsqueeze(1),
-                                    size=mask_size).squeeze(1)
-        o_mask_pred = F.interpolate(o_mask_pred.unsqueeze(1),
-                                    size=mask_size).squeeze(1)
-        s_mask_pred = torch.sigmoid(s_mask_pred) > 0.85
-        o_mask_pred = torch.sigmoid(o_mask_pred) > 0.85
-
-        ### triplets deduplicate ###
-        keep_tri = self._dedup_triplets_based_on_iou(
-            s_labels, o_labels, r_labels, s_mask_pred, o_mask_pred)
-
-        scores = torch.cat((s_scores[keep_tri], o_scores[keep_tri]), 0)
-        # object, (2*n)
-        labels = torch.cat((s_labels[keep_tri], o_labels[keep_tri]), 0)
-        # object bbox, (2*n, 5)
-        det_bboxes = torch.cat(
-            (s_det_bboxes[keep_tri], o_det_bboxes[keep_tri]), 0)
-        # object mask, (2*n, h, w)
-        output_masks = torch.cat(
-            (s_mask_pred[keep_tri], o_mask_pred[keep_tri]), 0)
-        # relation (n)
-        r_labels = r_labels[keep_tri]
-        r_scores = r_scores[keep_tri]
-        r_dists = r_dists[keep_tri]
-        # (n, 2)
-        rel_pairs = torch.arange(keep_tri.sum()*2,
-                                 dtype=r_labels.dtype,
-                                 device=r_labels.device).reshape(2, -1).T
-
-        return rel_pairs, labels, scores, det_bboxes, output_masks, r_labels, r_scores, r_dists
 
 
 class MLConv1d(nn.Module):
@@ -1468,3 +1213,180 @@ class MLConv1d(nn.Module):
         for i, layer in enumerate(self.layers):
             x = F.relu(layer(x)) if i < self.num_layers - 1 else layer(x)
         return x
+
+
+def dedup_triplets_based_on_iou(sub_labels, obj_labels, rel_labels, sub_masks, obj_masks):
+    relation_classes = defaultdict(lambda: [])
+    for k, (s_l, o_l, r_l) in enumerate(zip(sub_labels, obj_labels, rel_labels)):
+        relation_classes[(s_l, o_l, r_l)].append(k)
+    flatten_sub_masks = torch.asarray(sub_masks).to(torch.float).flatten(1)
+    flatten_obj_masks = torch.asarray(obj_masks).to(torch.float).flatten(1)
+    # put masks to cuda to accelerate
+    if torch.cuda.is_available():
+        flatten_sub_masks = flatten_sub_masks.to(device='cuda')
+        flatten_obj_masks = flatten_obj_masks.to(device='cuda')
+
+    def _dedup_triplets(triplets_ids, sub_masks, obj_masks, keep_tri):
+        while len(triplets_ids) > 1:
+            base_s_mask = sub_masks[triplets_ids[0:1]]
+            base_o_mask = obj_masks[triplets_ids[0:1]]
+            other_s_mask = sub_masks[triplets_ids[1:]]
+            other_o_mask = obj_masks[triplets_ids[1:]]
+            # calculate ious
+            s_ious = base_s_mask.mm(other_s_mask.transpose(
+                0, 1))/((base_s_mask+other_s_mask) > 0).sum(-1)
+            o_ious = base_o_mask.mm(other_o_mask.transpose(
+                0, 1))/((base_o_mask+other_o_mask) > 0).sum(-1)
+            ids_left = []
+            for s_iou, o_iou, other_id in zip(s_ious[0], o_ious[0], triplets_ids[1:]):
+                if (s_iou > 0.8) & (o_iou > 0.8):
+                    keep_tri[other_id] = False
+                else:
+                    ids_left.append(other_id)
+            triplets_ids = ids_left
+        return keep_tri
+
+    keep_tri = np.ones_like(rel_labels)
+    for triplets_ids in relation_classes.values():
+        if len(triplets_ids) > 1:
+            keep_tri = _dedup_triplets(
+                triplets_ids, flatten_sub_masks, flatten_obj_masks, keep_tri)
+    return keep_tri
+
+
+def merge_results(result1, result2, data=None):
+    # when eval_pan_rels is true, it is more complicated to merge two results.
+    # because we should merge two pan_seg into one.
+    assert os.getenv('EVAL_PAN_RELS', 'false').lower() != 'true'
+    result1 = copy.deepcopy(result1)
+    result2 = copy.deepcopy(result2)
+    assert isinstance(result1, Result)
+    assert isinstance(result2, Result)
+
+    # use ground truth to find the upper bound.
+    if data is not None:
+        gt_bboxes = data['gt_bboxes'][0].data.numpy()
+        gt_labels = data['gt_labels'][0].data.numpy() + 1
+        gt_rels = data['gt_rels'][0].data.numpy()
+        gt_masks = data['gt_masks'][0].data.masks
+        gt_sub_labels = gt_labels[gt_rels[:, 0]]
+        gt_obj_labels = gt_labels[gt_rels[:, 1]]
+        gt_rel_labels = gt_rels[:, 2]
+        gt_sub_masks = gt_masks[gt_rels[:, 0]]
+        gt_obj_masks = gt_masks[gt_rels[:, 1]]
+
+    # 1. parse result1
+    bboxes1 = result1.refine_bboxes
+    labels1 = result1.labels
+    rel_pairs1 = result1.rel_pair_idxes
+    rel_dists1 = result1.rel_dists
+    rel_labels1 = result1.rel_labels
+    rel_scores1 = result1.rel_scores
+    masks1 = result1.masks
+    pan_seg1 = result1.pan_results
+    num1 = rel_pairs1.shape[0]
+
+    # 2. parse result2
+    bboxes2 = result2.refine_bboxes
+    labels2 = result2.labels
+    rel_pairs2 = result2.rel_pair_idxes
+    # after merging, rel_pairs2 should be shifted with num1
+    rel_pairs2 += num1
+    rel_dists2 = result2.rel_dists
+    rel_labels2 = result2.rel_labels
+    rel_scores2 = result2.rel_scores
+    masks2 = result2.masks
+    pan_seg2 = result2.pan_results
+    num2 = rel_pairs2.shape[0]
+
+    # 3. reshape result to (n, ...)
+    bboxes1 = bboxes1.reshape((2, num1, 5)).transpose((1, 0, 2))
+    labels1 = labels1.reshape((2, num1)).transpose((1, 0))
+    h, w = masks1.shape[-2:]
+    masks1 = masks1.reshape((2, num1, h, w)).transpose((1, 0, 2, 3))
+
+    bboxes2 = bboxes2.reshape((2, num2, 5)).transpose((1, 0, 2))
+    labels2 = labels2.reshape((2, num2)).transpose((1, 0))
+    h, w = masks2.shape[-2:]
+    masks2 = masks2.reshape((2, num2, h, w)).transpose((1, 0, 2, 3))
+
+    # 4. concatenate result1 and result2
+    bboxes_all = np.concatenate((bboxes1, bboxes2), axis=0)
+    labels_all = np.concatenate((labels1, labels2), axis=0)
+    rel_dists_all = np.concatenate((rel_dists1, rel_dists2), axis=0)
+    rel_labels_all = np.concatenate((rel_labels1, rel_labels2), axis=0)
+    rel_scores_all = np.concatenate((rel_scores1, rel_scores2), axis=0)
+    masks_all = np.concatenate((masks1, masks2), axis=0)
+
+    # use ground truth to find the upper bound.
+    if data is not None:
+        for i in range(rel_labels_all.shape[0]):
+            sub_label = labels_all[i, 0]
+            obj_label = labels_all[i, 1]
+            rel_label = rel_labels_all[i]
+            sub_mask = masks_all[i, 0]
+            obj_mask = masks_all[i, 1]
+            sub_h, sub_w = sub_mask.shape
+            obj_h, obj_w = obj_mask.shape
+            sub_mask = sub_mask.reshape((-1))
+            obj_mask = obj_mask.reshape((-1))
+            for j in range(gt_rel_labels.shape[0]):
+                gt_sub_label = gt_sub_labels[j]
+                gt_obj_label = gt_obj_labels[j]
+                gt_rel_label = gt_rel_labels[j]
+                gt_sub_mask = gt_sub_masks[j]
+                gt_obj_mask = gt_obj_masks[j]
+                if sub_label == gt_sub_label and obj_label == gt_obj_label and rel_label == gt_rel_label:
+                    gt_sub_mask = cv2.resize(
+                        gt_sub_mask, (sub_w, sub_h), interpolation=cv2.INTER_NEAREST)
+                    gt_obj_mask = cv2.resize(
+                        gt_obj_mask, (obj_w, obj_h), interpolation=cv2.INTER_NEAREST)
+                    gt_sub_mask = gt_sub_mask.reshape((-1))
+                    gt_obj_mask = gt_obj_mask.reshape((-1))
+                    sub_iou = np.matmul(sub_mask.astype(np.int64), gt_sub_mask.astype(
+                        np.int64)) / (((sub_mask+gt_sub_mask) > 0).sum(-1) + 1e-8)
+                    obj_iou = np.matmul(obj_mask.astype(np.int64), gt_obj_mask.astype(
+                        np.int64)) / (((obj_mask+gt_obj_mask) > 0).sum(-1) + 1e-8)
+                    if sub_iou > 0.5 and obj_iou > 0.5:
+                        rel_scores_all[i] = 1.0
+
+    # 5. re-arrange based on rel_scores, output rel_idxes
+    rel_idxes = np.argsort(rel_scores_all, axis=0)[::-1]
+
+    # 6. re-arrange based on rel_idxes
+    bboxes = bboxes_all[rel_idxes]
+    labels = labels_all[rel_idxes]
+    rel_dists = rel_dists_all[rel_idxes]
+    rel_labels = rel_labels_all[rel_idxes]
+    rel_scores = rel_scores_all[rel_idxes]
+    masks = masks_all[rel_idxes]
+
+    # 7. dedup
+    keep_tri = dedup_triplets_based_on_iou(
+        labels[:, 0], labels[:, 1], rel_labels, masks[:, 0], masks[:, 1])
+    rel_pairs = np.array([i for i in range(keep_tri.sum()*2)],
+                         dtype=np.int64).reshape(2, -1).T
+    keep_tri = keep_tri.astype(np.bool8)
+    bboxes = bboxes[keep_tri]
+    labels = labels[keep_tri]
+    rel_dists = rel_dists[keep_tri]
+    rel_labels = rel_labels[keep_tri]
+    rel_scores = rel_scores[keep_tri]
+    masks = masks[keep_tri]
+
+    # 8. reshape bboxes, labels and masks to (n*2, ...)
+    bboxes = bboxes.transpose((1, 0, 2)).reshape((-1, 5))
+    labels = labels.transpose((1, 0)).reshape((-1))
+    masks = masks.transpose((1, 0, 2, 3)).reshape((-1, h, w))
+
+    # 9. construct merge result
+    merge_result = Result(refine_bboxes=bboxes,
+                          labels=labels,
+                          formatted_masks=dict(pan_results=pan_seg1),
+                          rel_pair_idxes=rel_pairs,
+                          rel_dists=rel_dists,
+                          rel_labels=rel_labels,
+                          rel_scores=rel_scores,
+                          pan_results=pan_seg1,
+                          masks=masks)
+    return merge_result
