@@ -8,7 +8,6 @@ import torch.nn.functional as F
 from detectron2.utils.visualizer import VisImage, Visualizer
 from mmdet.datasets.coco_panoptic import INSTANCE_OFFSET
 from mmdet.models import DETECTORS, SingleStageDetector
-from mmdet.utils.memory import AvoidCUDAOOM
 
 from openpsg.models.relation_heads.approaches import Result
 from openpsg.models.frameworks.psgtr import triplet2Result
@@ -50,7 +49,6 @@ class PSGMaskFormer(SingleStageDetector):
         outs = self.bbox_head(x, dummy_img_metas)
         return outs
 
-    @AvoidCUDAOOM.retry_if_cuda_oom
     def forward_train(self,
                       img,
                       img_metas,
