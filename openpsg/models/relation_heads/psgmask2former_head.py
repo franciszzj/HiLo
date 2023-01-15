@@ -47,6 +47,7 @@ class PSGMask2FormerHead(PSGMaskFormerHead):
                  sync_cls_avg_factor=False,
                  bg_cls_weight=0.02,
                  use_mask=True,
+                 use_self_distillation=False,
                  use_relation_query=False,
                  use_mlp_before_dot_product=False,
                  use_decoder_for_relation_query=True,
@@ -94,6 +95,7 @@ class PSGMask2FormerHead(PSGMaskFormerHead):
         self.sync_cls_avg_factor = sync_cls_avg_factor
         self.bg_cls_weight = bg_cls_weight
         self.use_mask = use_mask
+        self.use_self_distillation = use_self_distillation
         self.use_relation_query = use_relation_query
         self.use_mlp_before_dot_product = use_mlp_before_dot_product
         self.use_decoder_for_relation_query = use_decoder_for_relation_query

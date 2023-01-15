@@ -45,6 +45,7 @@ class PSGMask2FormerMultiDecoderHead(PSGMaskFormerHead):
                  sync_cls_avg_factor=False,
                  bg_cls_weight=0.02,
                  use_mask=True,
+                 use_self_distillation=False,
                  pixel_decoder=None,
                  enforce_decoder_input_project=False,
                  positional_encoding=None,
@@ -95,6 +96,7 @@ class PSGMask2FormerMultiDecoderHead(PSGMaskFormerHead):
         self.sync_cls_avg_factor = sync_cls_avg_factor
         self.bg_cls_weight = bg_cls_weight
         self.use_mask = use_mask
+        self.use_self_distillation = use_self_distillation
         self.decoder_cfg = decoder_cfg
         self.use_shared_query = use_shared_query
         self.test_forward_output_type = test_forward_output_type
@@ -382,6 +384,38 @@ class PSGMask2FormerMultiDecoderHead(PSGMaskFormerHead):
         low2high_all_o_bbox_preds = low2high_all_bbox_preds['obj']
         low2high_all_s_mask_preds = low2high_all_mask_preds['sub']
         low2high_all_o_mask_preds = low2high_all_mask_preds['obj']
+
+        # self-distillation
+        if self.use_self_distillation:
+            high2low_pred_results = []
+            for img_idx in range(len(img_metas)):
+                img_shape = img_metas[img_idx]['img_shape']
+                scale_factor = img_metas[img_idx]['scale_factor']
+                rel_pairs, labels, scores, bboxes, masks, r_labels, r_scores, r_dists = \
+                    self._get_results_single_easy(
+                        high2low_all_s_cls_scores[-1][img_idx].detach(), high2low_all_o_cls_scores[-1][img_idx].detach(), high2low_all_r_cls_scores[-1][img_idx].detach(),  # noqa
+                        high2low_all_s_bbox_preds[-1][img_idx].detach(), high2low_all_o_bbox_preds[-1][img_idx].detach(),  # noqa
+                        high2low_all_s_mask_preds[-1][img_idx].detach(), high2low_all_o_mask_preds[-1][img_idx].detach(),  # noqa
+                        img_shape, scale_factor, rescale=False)
+                high2low_pred_results.append([rel_pairs, labels, scores, bboxes,
+                                              masks, r_labels, r_scores, r_dists])
+            high2low_gt_labels_list, high2low_gt_bboxes_list, high2low_gt_masks_list, high2low_gt_rels_list = self._merge_gt_with_pred(
+                high2low_gt_labels_list, high2low_gt_bboxes_list, high2low_gt_masks_list, high2low_gt_rels_list, high2low_pred_results, img_metas)
+
+            low2high_pred_results = []
+            for img_idx in range(len(img_metas)):
+                img_shape = img_metas[img_idx]['img_shape']
+                scale_factor = img_metas[img_idx]['scale_factor']
+                rel_pairs, labels, scores, bboxes, masks, r_labels, r_scores, r_dists = \
+                    self._get_results_single_easy(
+                        low2high_all_s_cls_scores[-1][img_idx].detach(), low2high_all_o_cls_scores[-1][img_idx].detach(), low2high_all_r_cls_scores[-1][img_idx].detach(),  # noqa
+                        low2high_all_s_bbox_preds[-1][img_idx].detach(), low2high_all_o_bbox_preds[-1][img_idx].detach(),  # noqa
+                        low2high_all_s_mask_preds[-1][img_idx].detach(), low2high_all_o_mask_preds[-1][img_idx].detach(),  # noqa
+                        img_shape, scale_factor, rescale=False)
+                low2high_pred_results.append([rel_pairs, labels, scores, bboxes,
+                                              masks, r_labels, r_scores, r_dists])
+            low2high_gt_labels_list, low2high_gt_bboxes_list, low2high_gt_masks_list, low2high_gt_rels_list = self._merge_gt_with_pred(
+                low2high_gt_labels_list, low2high_gt_bboxes_list, low2high_gt_masks_list, low2high_gt_rels_list, low2high_pred_results, img_metas)
 
         num_dec_layers = len(high2low_all_s_cls_scores)
 
