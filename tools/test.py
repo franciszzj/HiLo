@@ -331,6 +331,18 @@ def main():
                 metric_results = metric
 
             pprint.pprint(metric_results)
+            epoch = args.checkpoint.split('/')[-1].split('.')[0].split('epoch_')[1]  # noqa
+            result_str = 'epoch={}, PQ={:.2f}\nR/mR@20={:.2f}/{:.2f}\nR/mR@50={:.2f}/{:.2f}\nR/mR@100={:.2f}/{:.2f}'.format(
+                epoch, metric_results.get('PQ', 0),
+                metric_results['sgdet_recall_R_20'] * 100,
+                metric_results['sgdet_mean_recall_mR_20'] * 100,
+                metric_results['sgdet_recall_R_50'] * 100,
+                metric_results['sgdet_mean_recall_mR_50'] * 100,
+                metric_results['sgdet_recall_R_100'] * 100,
+                metric_results['sgdet_mean_recall_mR_100'] * 100,
+            )
+            print(args)
+            print(result_str)
 
 
 object_classes = [

@@ -6,6 +6,7 @@ import random
 
 import numpy as np
 import PIL
+import mmcv
 from mmcv import Config
 from mmdet.datasets.coco_panoptic import INSTANCE_OFFSET
 from panopticapi.utils import rgb2id
@@ -62,9 +63,10 @@ def load_results(loadpath):
     with open(os.path.join(loadpath, 'relation.json')) as infile:
         all_img_dicts = json.load(infile)
 
+    print('Loading results from json...\n')
+    prog_bar = mmcv.ProgressBar(len(all_img_dicts))
     results = []
-    for single_result_dict in tqdm(all_img_dicts,
-                                   desc='Loading results from json...'):
+    for single_result_dict in all_img_dicts:
         pan_seg_filename = single_result_dict['pan_seg_file_name']
         pan_seg_filename = os.path.join(loadpath, 'panseg', pan_seg_filename)
         pan_seg_img = np.array(Image.open(pan_seg_filename))
@@ -94,8 +96,8 @@ def load_results(loadpath):
             count[label] += 1
 
         rel_array = np.asarray(single_result_dict['relations'])
-        if len(rel_array) > 20:
-            rel_array = rel_array[:20]
+        if len(rel_array) > 100:
+            rel_array = rel_array[:100]
         rel_dists = np.zeros((len(rel_array), 57))
         for idx_rel, rel in enumerate(rel_array):
             rel_dists[idx_rel, rel[2]] += 1  # TODO:1-index for gt?
@@ -110,6 +112,7 @@ def load_results(loadpath):
             pan_results=pan_result,
         )
         results.append(result)
+        prog_bar.update()
 
     return results
 
@@ -117,7 +120,6 @@ def load_results(loadpath):
 def parse_args():
     parser = argparse.ArgumentParser(description='MMDet eval a model')
     parser.add_argument('input_path', help='input file path')
-    parser.add_argument('output_path', help='output file path')
 
     args = parser.parse_args()
     return args
@@ -132,13 +134,17 @@ def main():
     metric1 = dataset.evaluate(outputs, **cfg.evaluation1)
     metric2 = dataset.evaluate(outputs, **cfg.evaluation2)
 
-    output_filename = os.path.join(args.output_path, 'scores.txt')
-
-    with open(output_filename, 'w+') as f3:
-        f3.write('Recall R 20: {}\n'.format(metric1['sgdet_recall_R_20']))
-        f3.write('MeanRecall R 20: {}\n'.format(
-            metric1['sgdet_mean_recall_mR_20']))
-        f3.write('PQ: {}\n'.format(metric2['PQ']))
+    result_str = 'epoch=xx, PQ={:.2f}\nR/mR@20={:.2f}/{:.2f}\nR/mR@50={:.2f}/{:.2f}\nR/mR@100={:.2f}/{:.2f}'.format(
+        metric2['PQ'],
+        metric1['sgdet_recall_R_20'] * 100,
+        metric1['sgdet_mean_recall_mR_20'] * 100,
+        metric1['sgdet_recall_R_50'] * 100,
+        metric1['sgdet_mean_recall_mR_50'] * 100,
+        metric1['sgdet_recall_R_100'] * 100,
+        metric1['sgdet_mean_recall_mR_100'] * 100,
+    )
+    print(args)
+    print(result_str)
 
 
 if __name__ == '__main__':
