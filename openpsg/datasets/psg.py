@@ -310,7 +310,6 @@ class PanopticSceneGraphDataset(CocoPanopticDataset):
             else:
                 gt_rels_cat = np.concatenate((gt_rels, gt_no_rels), axis=0)
             gt_rels = gt_rels_cat
-            import pdb; pdb.set_trace()
 
         ann = dict(
             bboxes=gt_bboxes,
