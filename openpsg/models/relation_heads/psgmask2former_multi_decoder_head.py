@@ -44,6 +44,7 @@ class PSGMask2FormerMultiDecoderHead(PSGMaskFormerHead):
                  num_transformer_feat_level=3,
                  sync_cls_avg_factor=False,
                  bg_cls_weight=0.02,
+                 rel_bg_cls_weight=0.02,
                  use_mask=True,
                  use_self_distillation=False,
                  pixel_decoder=None,
@@ -95,6 +96,7 @@ class PSGMask2FormerMultiDecoderHead(PSGMaskFormerHead):
         self.num_transformer_feat_level = num_transformer_feat_level
         self.sync_cls_avg_factor = sync_cls_avg_factor
         self.bg_cls_weight = bg_cls_weight
+        self.rel_bg_cls_weight = rel_bg_cls_weight
         self.use_mask = use_mask
         self.use_self_distillation = use_self_distillation
         self.decoder_cfg = decoder_cfg
@@ -274,9 +276,7 @@ class PSGMask2FormerMultiDecoderHead(PSGMaskFormerHead):
             # NOTE set background class as the last indice
             o_class_weight[-1] = bg_cls_weight
             obj_loss_cls.update({'class_weight': o_class_weight})
-        if not rel_loss_cls.use_sigmoid:
-            rel_bg_cls_weight = bg_cls_weight
-        else:
+        if rel_loss_cls.use_sigmoid:
             # When use_sigmoid=True, then ignore the index 0
             rel_bg_cls_weight = 0.
         r_class_weight = rel_loss_cls.get('class_weight', None)

@@ -34,6 +34,7 @@ class PanopticSceneGraphDataset(CocoPanopticDataset):
             all_bboxes: bool = False,  # load all bboxes (thing, stuff) for SG
             # {'random', 'low2high', 'high2low'}
             overlap_rel_choice_type: str = 'random',
+            add_no_rel_triplet: bool = False,
     ):
         self.ann_file = ann_file
         self.data_root = data_root
@@ -44,6 +45,7 @@ class PanopticSceneGraphDataset(CocoPanopticDataset):
         self.filter_empty_gt = filter_empty_gt
         self.file_client = mmcv.FileClient(**file_client_args)
         self.overlap_rel_choice_type = overlap_rel_choice_type
+        self.add_no_rel_triplet = add_no_rel_triplet
 
         # join paths if data_root is specified
         if self.data_root is not None:
@@ -286,6 +288,29 @@ class PanopticSceneGraphDataset(CocoPanopticDataset):
             else:
                 relation_map[int(gt_rels[i, 0]),
                              int(gt_rels[i, 1])] = int(gt_rels[i, 2])
+
+        # add no relation triplet
+        if self.add_no_rel_triplet:
+            sub_obj_pair_list = [[i, j] for i, j, r in gt_rels]
+            gt_no_rels = []
+            for i in range(len(gt_labels)):  # subject
+                for j in range(len(gt_labels)):  # object
+                    if i == j:
+                        continue
+                    if [i, j] not in sub_obj_pair_list:
+                        gt_no_rels.append([i, j, 0])
+            gt_no_rels = np.array(gt_no_rels)
+            if gt_rels.shape[0] + gt_no_rels.shape[0] > 100:
+                gt_no_rels_ids = [i for i in range(gt_no_rels.shape[0])]
+                gt_no_rels_select_ids = random.sample(
+                    gt_no_rels_ids, k=100-gt_rels.shape[0])
+                gt_no_rels_select = gt_no_rels[gt_no_rels_select_ids]
+                gt_rels_cat = np.concatenate(
+                    (gt_rels, gt_no_rels_select), axis=0)
+            else:
+                gt_rels_cat = np.concatenate((gt_rels, gt_no_rels), axis=0)
+            gt_rels = gt_rels_cat
+            import pdb; pdb.set_trace()
 
         ann = dict(
             bboxes=gt_bboxes,
