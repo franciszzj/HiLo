@@ -232,6 +232,17 @@ class MaskHTriMatcher(BaseAssigner):
                  o_dice_cost=dict(type='DiceCost', weight=1.0,
                                   pred_act=True, eps=1.0),
                  r_cls_cost=dict(type='ClassificationCost', weight=1.)):
+        self.s_cls_cost_weight = s_cls_cost['weight']
+        self.s_reg_cost_weight = s_reg_cost['weight']
+        self.s_iou_cost_weight = s_iou_cost['weight']
+        self.s_focal_cost_weight = s_focal_cost['weight']
+        self.s_dice_cost_weight = s_dice_cost['weight']
+        self.o_cls_cost_weight = o_cls_cost['weight']
+        self.o_reg_cost_weight = o_reg_cost['weight']
+        self.o_iou_cost_weight = o_iou_cost['weight']
+        self.o_focal_cost_weight = o_focal_cost['weight']
+        self.o_dice_cost_weight = o_dice_cost['weight']
+        self.r_cls_cost_weight = r_cls_cost['weight']
         self.s_cls_cost = build_match_cost(s_cls_cost)
         self.s_reg_cost = build_match_cost(s_reg_cost)
         self.s_iou_cost = build_match_cost(s_iou_cost)
@@ -296,24 +307,45 @@ class MaskHTriMatcher(BaseAssigner):
 
         # 2. compute the weighted costs
         # classification and bboxcost.
-        s_cls_cost = self.s_cls_cost(sub_cls_score, gt_sub_labels)
-        o_cls_cost = self.o_cls_cost(obj_cls_score, gt_obj_labels)
-        r_cls_cost = self.r_cls_cost(rel_cls_score, gt_rel_labels)
+        s_cls_cost = self.s_cls_cost(
+            sub_cls_score, gt_sub_labels) if self.s_cls_cost_weight > 1e-8 else 0.0
+        o_cls_cost = self.o_cls_cost(
+            obj_cls_score, gt_obj_labels) if self.o_cls_cost_weight > 1e-8 else 0.0
+        r_cls_cost = self.r_cls_cost(
+            rel_cls_score, gt_rel_labels) if self.r_cls_cost_weight > 1e-8 else 0.0
         # regression L1 cost
-        normalize_gt_sub_bboxes = gt_sub_bboxes / factor
-        normalize_gt_obj_bboxes = gt_obj_bboxes / factor
-        s_reg_cost = self.s_reg_cost(sub_bbox_pred, normalize_gt_sub_bboxes)
-        o_reg_cost = self.o_reg_cost(obj_bbox_pred, normalize_gt_obj_bboxes)
+        if self.s_reg_cost_weight > 1e-8:
+            normalize_gt_sub_bboxes = gt_sub_bboxes / factor
+            s_reg_cost = self.s_reg_cost(
+                sub_bbox_pred, normalize_gt_sub_bboxes)
+        else:
+            s_reg_cost = 0.0
+        if self.o_reg_cost_weight > 1e-8:
+            normalize_gt_obj_bboxes = gt_obj_bboxes / factor
+            o_reg_cost = self.o_reg_cost(
+                obj_bbox_pred, normalize_gt_obj_bboxes)
+        else:
+            o_reg_cost = 0.0
         # regression iou cost, defaultly giou is used in official DETR.
-        sub_bboxes = bbox_cxcywh_to_xyxy(sub_bbox_pred) * factor
-        obj_bboxes = bbox_cxcywh_to_xyxy(obj_bbox_pred) * factor
-        s_iou_cost = self.s_iou_cost(sub_bboxes, gt_sub_bboxes)
-        o_iou_cost = self.o_iou_cost(obj_bboxes, gt_obj_bboxes)
+        if self.s_iou_cost_weight > 1e-8:
+            sub_bboxes = bbox_cxcywh_to_xyxy(sub_bbox_pred) * factor
+            s_iou_cost = self.s_iou_cost(sub_bboxes, gt_sub_bboxes)
+        else:
+            s_iou_cost = 0.0
+        if self.o_iou_cost_weight > 1e-8:
+            obj_bboxes = bbox_cxcywh_to_xyxy(obj_bbox_pred) * factor
+            o_iou_cost = self.o_iou_cost(obj_bboxes, gt_obj_bboxes)
+        else:
+            o_iou_cost = 0.0
         # mask cost
-        s_focal_cost = self.s_focal_cost(sub_mask_pred, gt_sub_masks)
-        s_dice_cost = self.s_dice_cost(sub_mask_pred, gt_sub_masks)
-        o_focal_cost = self.o_focal_cost(obj_mask_pred, gt_obj_masks)
-        o_dice_cost = self.o_dice_cost(obj_mask_pred, gt_obj_masks)
+        s_focal_cost = self.s_focal_cost(
+            sub_mask_pred, gt_sub_masks) if self.s_focal_cost_weight > 1e-8 else 0.0
+        s_dice_cost = self.s_dice_cost(
+            sub_mask_pred, gt_sub_masks) if self.s_dice_cost_weight > 1e-8 else 0.0
+        o_focal_cost = self.o_focal_cost(
+            obj_mask_pred, gt_obj_masks) if self.o_focal_cost_weight > 1e-8 else 0.0
+        o_dice_cost = self.o_dice_cost(
+            obj_mask_pred, gt_obj_masks) if self.o_dice_cost_weight > 1e-8 else 0.0
         # weighted sum of above three costs
         beta_1, beta_2, beta_3 = 1.2, 1, 1
         alpha_s, alpha_o, alpha_r = 1, 1, 1
