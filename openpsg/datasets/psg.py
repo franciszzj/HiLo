@@ -305,10 +305,15 @@ class PanopticSceneGraphDataset(CocoPanopticDataset):
                 gt_no_rels_select_ids = random.sample(
                     gt_no_rels_ids, k=100-gt_rels.shape[0])
                 gt_no_rels_select = gt_no_rels[gt_no_rels_select_ids]
-                gt_rels_cat = np.concatenate(
-                    (gt_rels, gt_no_rels_select), axis=0)
+                if len(gt_no_rels_select.shape) == 2:
+                    if gt_no_rels_select.shape[0] != 0 and gt_no_rels_select.shape[1] == 3:
+                        gt_rels_cat = np.concatenate(
+                            (gt_rels, gt_no_rels_select), axis=0)
             else:
-                gt_rels_cat = np.concatenate((gt_rels, gt_no_rels), axis=0)
+                if len(gt_no_rels.shape) == 2:
+                    if gt_no_rels.shape[0] != 0 and gt_no_rels.shape[1] == 3:
+                        gt_rels_cat = np.concatenate(
+                            (gt_rels, gt_no_rels), axis=0)
             gt_rels = gt_rels_cat
 
         ann = dict(
