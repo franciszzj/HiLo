@@ -1186,10 +1186,8 @@ class PSGMaskFormerHead(AnchorFreeHead):
         complete_triplets = torch.cat(
             (complete_rel_pairs, complete_r_labels.unsqueeze(-1)), dim=1)
 
-        # test which one is better?
         complete_masks_score = complete_scores.view(
             -1, 1, 1) * complete_masks_logits
-        # complete_masks_score = complete_masks_logits
         h, w = complete_masks_score.shape[-2:]
 
         ################
