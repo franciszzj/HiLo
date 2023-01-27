@@ -26,7 +26,7 @@ from mmdet.models.dense_heads import AnchorFreeHead
 from openpsg.models.relation_heads.psgmaskformer_head import PSGMaskFormerHead
 from openpsg.models.relation_heads.psgtr_head import MLP
 from openpsg.models.relation_heads.approaches import Result
-from openpsg.models.frameworks.psgtr import triplet2Result
+from openpsg.models.frameworks.psgmaskformer import triplet2Result
 
 
 @HEADS.register_module()

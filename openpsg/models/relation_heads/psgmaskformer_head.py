@@ -1,5 +1,6 @@
 # Copyright (c) OpenMMLab. All rights reserved.
 from collections import defaultdict
+import os
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -358,15 +359,15 @@ class PSGMaskFormerHead(AnchorFreeHead):
         merge_gt_masks_list = []
         merge_gt_rels_list = []
         for img_idx in range(len(img_metas)):
-            rel_pairs, labels, scores, det_bboxes, output_masks, r_labels, r_scores, r_dists = \
+            rel_pairs, labels, scores, bboxes, masks, r_labels, r_scores, r_dists = \
                 pred_results[img_idx]
 
             merge_gt_labels = torch.cat(
                 (gt_labels_list[img_idx], labels), dim=0)
             merge_gt_bboxes = torch.cat(
-                (gt_bboxes_list[img_idx], det_bboxes[:, :4]), dim=0)
+                (gt_bboxes_list[img_idx], bboxes[:, :4]), dim=0)
             merge_gt_masks = torch.cat(
-                (gt_masks_list[img_idx], output_masks), dim=0)
+                (gt_masks_list[img_idx], masks), dim=0)
             if rel_pairs.shape[0] > 0 and r_labels.shape[0] > 0:
                 rel_pairs += gt_labels_list[img_idx].shape[0]
                 rel_pairs = rel_pairs.reshape(2, -1).T
@@ -1048,20 +1049,10 @@ class PSGMaskFormerHead(AnchorFreeHead):
         return result_list
 
     def _get_results_single(self,
-                            s_cls_score,
-                            o_cls_score,
-                            r_cls_score,
-                            s_bbox_pred,
-                            o_bbox_pred,
-                            s_mask_pred,
-                            o_mask_pred,
-                            img_shape,
-                            scale_factor,
-                            rescale=False):
-
-        assert len(s_cls_score) == len(o_cls_score)
-        assert len(s_cls_score) == len(s_bbox_pred)
-        assert len(s_cls_score) == len(o_bbox_pred)
+                            s_cls_score, o_cls_score, r_cls_score,
+                            s_bbox_pred, o_bbox_pred,
+                            s_mask_pred, o_mask_pred,
+                            img_shape, scale_factor, rescale=False):
 
         mask_size = (round(img_shape[0] / scale_factor[1]),
                      round(img_shape[1] / scale_factor[0]))
@@ -1069,284 +1060,216 @@ class PSGMaskFormerHead(AnchorFreeHead):
 
         assert self.sub_loss_cls.use_sigmoid == False
         assert self.obj_loss_cls.use_sigmoid == False
-        # assert self.rel_loss_cls.use_sigmoid == False
-        assert len(s_cls_score) == len(r_cls_score)
 
-        # 0-based label input for objects and self.num_classes as default background cls
+        ###################
+        # sub/obj/rel cls #
+        ###################
+        # 0-based label input for objects, self.num_classes as default background class
         s_logits = F.softmax(s_cls_score, dim=-1)[..., :-1]
         o_logits = F.softmax(o_cls_score, dim=-1)[..., :-1]
-
         s_scores, s_labels = s_logits.max(-1)
         o_scores, o_labels = o_logits.max(-1)
 
+        # 1-based label input for relationships, 0 as default no relationship class
         if self.rel_loss_cls.use_sigmoid:
             r_cls_score[:, 0] = -9999
-            r_cls_score = F.sigmoid(r_cls_score)
-            max_rel_index = torch.argmax(r_cls_score, dim=1)
-            offset = max_rel_index.new_tensor(
-                [i * r_cls_score.shape[-1] for i in range(r_cls_score.shape[0])])
-            max_rel_index += offset
-            # No relationship is in index 0.
-            r_cls_score[:, 0] = 1. - torch.take(r_cls_score, max_rel_index)
-            r_lgs = r_cls_score
+            r_lgs = F.sigmoid(r_cls_score)
         else:
             r_lgs = F.softmax(r_cls_score, dim=-1)
         r_logits = r_lgs[..., 1:]
+        # Top K
         r_scores, r_indexes = r_logits.reshape(-1).topk(max_per_img)
         r_labels = r_indexes % self.num_relations + 1
         triplet_index = r_indexes // self.num_relations
 
         s_scores = s_scores[triplet_index]
-        s_labels = s_labels[triplet_index] + 1
+        s_labels = s_labels[triplet_index]
         s_bbox_pred = s_bbox_pred[triplet_index]
+        s_mask_pred = s_mask_pred[triplet_index]
 
         o_scores = o_scores[triplet_index]
-        o_labels = o_labels[triplet_index] + 1
+        o_labels = o_labels[triplet_index]
         o_bbox_pred = o_bbox_pred[triplet_index]
+        o_mask_pred = o_mask_pred[triplet_index]
 
-        r_dists = r_lgs.reshape(
-            -1, self.num_relations +
-            1)[triplet_index]  # NOTE: to match the evaluation in vg
+        r_dists = r_lgs.reshape(-1, self.num_relations + 1)[triplet_index]
 
-        if self.use_mask:
-            s_mask_pred = s_mask_pred[triplet_index]
-            o_mask_pred = o_mask_pred[triplet_index]
-            s_mask_pred = F.interpolate(s_mask_pred.unsqueeze(1),
-                                        size=mask_size).squeeze(1)
-            o_mask_pred = F.interpolate(o_mask_pred.unsqueeze(1),
-                                        size=mask_size).squeeze(1)
-
-            s_mask_pred_logits = s_mask_pred
-            o_mask_pred_logits = o_mask_pred
-
-            s_mask_pred = torch.sigmoid(s_mask_pred) > 0.85
-            o_mask_pred = torch.sigmoid(o_mask_pred) > 0.85
-            ### triplets deduplicate####
-            relation_classes = defaultdict(lambda: [])
-            for k, (s_l, o_l, r_l) in enumerate(zip(s_labels, o_labels, r_labels)):
-                relation_classes[(s_l.item(), o_l.item(),
-                                  r_l.item())].append(k)
-            s_binary_masks = s_mask_pred.to(torch.float).flatten(1)
-            o_binary_masks = o_mask_pred.to(torch.float).flatten(1)
-
-            def dedup_triplets(triplets_ids, s_binary_masks, o_binary_masks, keep_tri):
-                while len(triplets_ids) > 1:
-                    base_s_mask = s_binary_masks[triplets_ids[0]].unsqueeze(0)
-                    base_o_mask = o_binary_masks[triplets_ids[0]].unsqueeze(0)
-                    other_s_masks = s_binary_masks[triplets_ids[1:]]
-                    other_o_masks = o_binary_masks[triplets_ids[1:]]
-                    # calculate ious
-                    s_ious = base_s_mask.mm(other_s_masks.transpose(
-                        0, 1))/((base_s_mask+other_s_masks) > 0).sum(-1)
-                    o_ious = base_o_mask.mm(other_o_masks.transpose(
-                        0, 1))/((base_o_mask+other_o_masks) > 0).sum(-1)
-                    ids_left = []
-                    for s_iou, o_iou, other_id in zip(s_ious[0], o_ious[0], triplets_ids[1:]):
-                        if (s_iou > 0.5) & (o_iou > 0.5):
-                            keep_tri[other_id] = False
-                        else:
-                            ids_left.append(other_id)
-                    triplets_ids = ids_left
-                return keep_tri
-
-            keep_tri = torch.ones_like(r_labels, dtype=torch.bool)
-            for triplets_ids in relation_classes.values():
-                if len(triplets_ids) > 1:
-                    keep_tri = dedup_triplets(
-                        triplets_ids, s_binary_masks, o_binary_masks, keep_tri)
-
-            s_labels = s_labels[keep_tri]
-            o_labels = o_labels[keep_tri]
-            s_mask_pred = s_mask_pred[keep_tri]
-            o_mask_pred = o_mask_pred[keep_tri]
-
-            complete_labels = torch.cat((s_labels, o_labels), 0)
-            output_masks = torch.cat((s_mask_pred, o_mask_pred), 0)
-            r_scores = r_scores[keep_tri]
-            r_labels = r_labels[keep_tri]
-            r_dists = r_dists[keep_tri]
-            rel_pairs = torch.arange(keep_tri.sum()*2,
-                                     dtype=torch.int).reshape(2, -1).T
-            complete_r_scores = r_scores
-            complete_r_labels = r_labels
-            complete_r_dists = r_dists
-
-            s_binary_masks = s_binary_masks[keep_tri]
-            o_binary_masks = o_binary_masks[keep_tri]
-
-            s_mask_pred_logits = s_mask_pred_logits[keep_tri]
-            o_mask_pred_logits = o_mask_pred_logits[keep_tri]
-
-            ###end triplets deduplicate####
-
-            #### for panoptic postprocessing ####
-            keep = (s_labels != (s_logits.shape[-1] - 1)) & (
-                o_labels != (s_logits.shape[-1] - 1)) & (
-                    s_scores[keep_tri] > 0.5) & (o_scores[keep_tri] > 0.5) & (r_scores > 0.3)  # the threshold is set to 0.85
-            r_scores = r_scores[keep]
-            r_labels = r_labels[keep]
-            r_dists = r_dists[keep]
-
-            labels = torch.cat((s_labels[keep], o_labels[keep]), 0) - 1
-            masks = torch.cat((s_mask_pred[keep], o_mask_pred[keep]), 0)
-            binary_masks = masks.to(torch.float).flatten(1)
-            s_mask_pred_logits = s_mask_pred_logits[keep]
-            o_mask_pred_logits = o_mask_pred_logits[keep]
-            mask_logits = torch.cat(
-                (s_mask_pred_logits, o_mask_pred_logits), 0)
-
-            h, w = masks.shape[-2:]
-
-            if labels.numel() == 0:
-                pan_img = torch.ones(mask_size).cpu().to(torch.long)
-                pan_masks = pan_img.unsqueeze(0).cpu().to(torch.long)
-                pan_rel_pairs = torch.arange(len(labels), dtype=torch.int).to(
-                    masks.device).reshape(2, -1).T
-                rels = torch.tensor([0, 0, 0]).view(-1, 3)
-                pan_labels = torch.tensor([0])
-            else:
-                stuff_equiv_classes = defaultdict(lambda: [])
-                thing_classes = defaultdict(lambda: [])
-                thing_dedup = defaultdict(lambda: [])
-                for k, label in enumerate(labels):
-                    if label.item() >= 80:
-                        stuff_equiv_classes[label.item()].append(k)
-                    else:
-                        thing_classes[label.item()].append(k)
-
-                pan_rel_pairs = torch.arange(
-                    len(labels), dtype=torch.int).to(masks.device)
-
-                def dedup_things(pred_ids, binary_masks):
-                    while len(pred_ids) > 1:
-                        base_mask = binary_masks[pred_ids[0]].unsqueeze(0)
-                        other_masks = binary_masks[pred_ids[1:]]
-                        # calculate ious
-                        ious = base_mask.mm(other_masks.transpose(
-                            0, 1))/((base_mask+other_masks) > 0).sum(-1)
-                        ids_left = []
-                        thing_dedup[pred_ids[0]].append(pred_ids[0])
-                        for iou, other_id in zip(ious[0], pred_ids[1:]):
-                            if iou > 0.5:
-                                thing_dedup[pred_ids[0]].append(other_id)
-                            else:
-                                ids_left.append(other_id)
-                        pred_ids = ids_left
-                    if len(pred_ids) == 1:
-                        thing_dedup[pred_ids[0]].append(pred_ids[0])
-
-                # create dict that groups duplicate masks
-                for thing_pred_ids in thing_classes.values():
-                    if len(thing_pred_ids) > 1:
-                        dedup_things(thing_pred_ids, binary_masks)
-                    else:
-                        thing_dedup[thing_pred_ids[0]].append(
-                            thing_pred_ids[0])
-
-                def get_ids_area(masks, pan_rel_pairs, r_labels, r_dists, dedup=False):
-                    # This helper function creates the final panoptic segmentation image
-                    # It also returns the area of the masks that appears on the image
-                    masks = masks.flatten(1)
-                    m_id = masks.transpose(0, 1).softmax(-1)
-
-                    if m_id.shape[-1] == 0:
-                        # We didn't detect any mask :(
-                        m_id = torch.zeros((h, w),
-                                           dtype=torch.long,
-                                           device=m_id.device)
-                    else:
-                        m_id = m_id.argmax(-1).view(h, w)
-
-                    if dedup:
-                        # Merge the masks corresponding to the same stuff class
-                        for equiv in stuff_equiv_classes.values():
-                            if len(equiv) > 1:
-                                for eq_id in equiv:
-                                    m_id.masked_fill_(m_id.eq(eq_id), equiv[0])
-                                    pan_rel_pairs[eq_id] = equiv[0]
-                        # Merge the masks corresponding to the same thing instance
-                        for equiv in thing_dedup.values():
-                            if len(equiv) > 1:
-                                for eq_id in equiv:
-                                    m_id.masked_fill_(m_id.eq(eq_id), equiv[0])
-                                    pan_rel_pairs[eq_id] = equiv[0]
-
-                    m_ids_remain, _ = m_id.unique().sort()
-
-                    pan_rel_pairs = pan_rel_pairs.reshape(2, -1).T
-                    no_obj_filter = torch.zeros(
-                        pan_rel_pairs.shape[0], dtype=torch.bool)
-                    for triplet_id in range(pan_rel_pairs.shape[0]):
-                        if pan_rel_pairs[triplet_id, 0] in m_ids_remain and pan_rel_pairs[triplet_id, 1] in m_ids_remain:
-                            no_obj_filter[triplet_id] = True
-                    pan_rel_pairs = pan_rel_pairs[no_obj_filter]
-                    r_labels, r_dists = r_labels[no_obj_filter], r_dists[no_obj_filter]
-                    pan_labels = []
-                    pan_masks = []
-                    for i, m_id_remain in enumerate(m_ids_remain):
-                        pan_masks.append(m_id.eq(m_id_remain).unsqueeze(0))
-                        pan_labels.append(labels[m_id_remain].unsqueeze(0))
-                        m_id.masked_fill_(m_id.eq(m_id_remain), i)
-                        pan_rel_pairs.masked_fill_(
-                            pan_rel_pairs.eq(m_id_remain), i)
-                    pan_masks = torch.cat(pan_masks, 0)
-                    pan_labels = torch.cat(pan_labels, 0)
-                    seg_img = m_id * INSTANCE_OFFSET + pan_labels[m_id]
-                    seg_img = seg_img.view(h, w).cpu().to(torch.long)
-                    m_id = m_id.view(h, w).cpu()
-                    area = []
-                    for i in range(len(masks)):
-                        area.append(m_id.eq(i).sum().item())
-                    return area, seg_img, pan_rel_pairs, pan_masks, r_labels, r_dists, pan_labels
-
-                area, pan_img, pan_rel_pairs, pan_masks, r_labels, r_dists, pan_labels = get_ids_area(
-                    mask_logits, pan_rel_pairs, r_labels, r_dists, dedup=True)
-                if r_labels.numel() == 0:
-                    rels = torch.tensor([0, 0, 0]).view(-1, 3)
-                else:
-                    rels = torch.cat(
-                        (pan_rel_pairs, r_labels.unsqueeze(-1)), -1)
-                # if labels.numel() > 0:
-                #     # We know filter empty masks as long as we find some
-                #     while True:
-                #         filtered_small = torch.as_tensor(
-                #             [area[i] <= 4 for i, c in enumerate(labels)],
-                #             dtype=torch.bool,
-                #             device=keep.device)
-                #         if filtered_small.any().item():
-                #             scores = scores[~filtered_small]
-                #             labels = labels[~filtered_small]
-                #             masks = masks[~filtered_small]
-                #             area, pan_img = get_ids_area(masks, scores)
-                #         else:
-                #             break
-
-        s_det_bboxes = bbox_cxcywh_to_xyxy(s_bbox_pred)
-        s_det_bboxes[:, 0::2] = s_det_bboxes[:, 0::2] * img_shape[1]
-        s_det_bboxes[:, 1::2] = s_det_bboxes[:, 1::2] * img_shape[0]
-        s_det_bboxes[:, 0::2].clamp_(min=0, max=img_shape[1])
-        s_det_bboxes[:, 1::2].clamp_(min=0, max=img_shape[0])
-        if rescale:
-            s_det_bboxes /= s_det_bboxes.new_tensor(scale_factor)
-        s_det_bboxes = torch.cat((s_det_bboxes, s_scores.unsqueeze(1)), -1)
-
-        o_det_bboxes = bbox_cxcywh_to_xyxy(o_bbox_pred)
-        o_det_bboxes[:, 0::2] = o_det_bboxes[:, 0::2] * img_shape[1]
-        o_det_bboxes[:, 1::2] = o_det_bboxes[:, 1::2] * img_shape[0]
-        o_det_bboxes[:, 0::2].clamp_(min=0, max=img_shape[1])
-        o_det_bboxes[:, 1::2].clamp_(min=0, max=img_shape[0])
-        if rescale:
-            o_det_bboxes /= o_det_bboxes.new_tensor(scale_factor)
-        o_det_bboxes = torch.cat((o_det_bboxes, o_scores.unsqueeze(1)), -1)
-
-        det_bboxes = torch.cat(
-            (s_det_bboxes[keep_tri], o_det_bboxes[keep_tri]), 0)
-
-        if self.use_mask:
-            return det_bboxes, complete_labels, rel_pairs, output_masks, pan_rel_pairs, \
-                pan_img, complete_r_scores, complete_r_labels, complete_r_dists, r_scores, r_labels, r_dists, pan_masks, rels, pan_labels
+        if os.getenv('EVAL_PAN_RELS', 'false').lower() == 'true':
+            keep = (s_scores > 0.5) & (o_scores > 0.5) & (r_scores > 0.1)
         else:
-            return det_bboxes, labels, rel_pairs, r_labels, r_dists
+            keep = (s_scores > 0.0) & (o_scores > 0.0) & (r_scores > 0.0)
+        s_scores = s_scores[keep]
+        s_labels = s_labels[keep]
+        s_bbox_pred = s_bbox_pred[keep]
+        s_mask_pred = s_mask_pred[keep]
+        o_scores = o_scores[keep]
+        o_labels = o_labels[keep]
+        o_bbox_pred = o_bbox_pred[keep]
+        o_mask_pred = o_mask_pred[keep]
+        r_scores = r_scores[keep]
+        r_labels = r_labels[keep]
+        r_dists = r_dists[keep]
+
+        ################
+        # sub/obj bbox #
+        ################
+        s_bboxes = bbox_cxcywh_to_xyxy(s_bbox_pred)
+        s_bboxes[:, 0::2] = s_bboxes[:, 0::2] * img_shape[1]
+        s_bboxes[:, 1::2] = s_bboxes[:, 1::2] * img_shape[0]
+        s_bboxes[:, 0::2].clamp_(min=0, max=img_shape[1])
+        s_bboxes[:, 1::2].clamp_(min=0, max=img_shape[0])
+        if rescale:
+            s_bboxes /= s_bboxes.new_tensor(scale_factor)
+        s_bboxes = torch.cat((s_bboxes, s_scores.unsqueeze(1)), -1)
+
+        o_bboxes = bbox_cxcywh_to_xyxy(o_bbox_pred)
+        o_bboxes[:, 0::2] = o_bboxes[:, 0::2] * img_shape[1]
+        o_bboxes[:, 1::2] = o_bboxes[:, 1::2] * img_shape[0]
+        o_bboxes[:, 0::2].clamp_(min=0, max=img_shape[1])
+        o_bboxes[:, 1::2].clamp_(min=0, max=img_shape[0])
+        if rescale:
+            o_bboxes /= o_bboxes.new_tensor(scale_factor)
+        o_bboxes = torch.cat((o_bboxes, o_scores.unsqueeze(1)), -1)
+
+        ################
+        # sub/obj mask #
+        ################
+        s_mask_pred = F.interpolate(s_mask_pred.unsqueeze(1),
+                                    size=mask_size).squeeze(1)
+        o_mask_pred = F.interpolate(o_mask_pred.unsqueeze(1),
+                                    size=mask_size).squeeze(1)
+        s_mask_pred_logits = s_mask_pred
+        o_mask_pred_logits = o_mask_pred
+        s_mask_pred = torch.sigmoid(s_mask_pred) > 0.85
+        o_mask_pred = torch.sigmoid(o_mask_pred) > 0.85
+
+        ########################
+        # triplets deduplicate #
+        ########################
+        keep_tri = self._dedup_triplets_based_on_iou(
+            s_labels, o_labels, r_labels, s_mask_pred, o_mask_pred)
+
+        ###################
+        # complete output #
+        ###################
+        # object score, (2*n, )
+        s_scores = s_scores[keep_tri]
+        o_scores = o_scores[keep_tri]
+        complete_scores = torch.cat((s_scores, o_scores), 0)
+        # object label, (2*n, )
+        s_labels = s_labels[keep_tri]
+        o_labels = o_labels[keep_tri]
+        complete_labels = torch.cat((s_labels, o_labels), 0)
+        # object bbox, (2*n, 5)
+        s_bboxes = s_bboxes[keep_tri]
+        o_bboxes = o_bboxes[keep_tri]
+        complete_bboxes = torch.cat((s_bboxes, o_bboxes), 0)
+        # object mask, (2*n, h, w)
+        s_mask_pred_logits = s_mask_pred_logits[keep_tri]
+        o_mask_pred_logits = o_mask_pred_logits[keep_tri]
+        complete_masks_logits = torch.cat(
+            (s_mask_pred_logits, o_mask_pred_logits), 0)
+        s_mask_pred = s_mask_pred[keep_tri]
+        o_mask_pred = o_mask_pred[keep_tri]
+        complete_masks_binary = torch.cat((s_mask_pred, o_mask_pred), 0)
+        # relation (n, )
+        r_labels = r_labels[keep_tri]
+        r_scores = r_scores[keep_tri]
+        r_dists = r_dists[keep_tri]
+        # (n, 2)
+        complete_rel_pairs = torch.arange(keep_tri.sum()*2,
+                                          dtype=r_labels.dtype,
+                                          device=r_labels.device).reshape(2, -1).T
+        complete_r_scores = r_scores
+        complete_r_labels = r_labels
+        complete_r_dists = r_dists
+        complete_triplets = torch.cat(
+            (complete_rel_pairs, complete_r_labels.unsqueeze(-1)), dim=1)
+
+        # test which one is better?
+        complete_masks_score = complete_scores.view(
+            -1, 1, 1) * complete_masks_logits
+        # complete_masks_score = complete_masks_logits
+        h, w = complete_masks_score.shape[-2:]
+
+        ################
+        # panoptic seg #
+        ################
+        panoptic_seg = torch.full(
+            (h, w), self.num_classes, dtype=torch.int32, device=complete_masks_score.device)
+
+        if complete_labels.numel() == 0:
+            panoptic_seg = torch.ones(mask_size).cpu().to(torch.long)
+            new_masks_binary = panoptic_seg.unsqueeze(0).cpu().to(torch.long)
+            new_rel_pairs = torch.arange(len(complete_labels), dtype=torch.int).to(
+                complete_masks_binary.device).reshape(2, -1).T
+            new_triplets = torch.tensor([0, 0, 0]).view(-1, 3)
+            new_labels = torch.tensor([0])
+            new_r_scores = complete_r_scores
+            new_r_labels = complete_r_labels
+            new_r_dists = complete_r_dists
+            new_bboxes = torch.zeros((1, 5))
+            print('\tno object...')
+        else:
+            keep_num, old2new_map, new2old_map = self._dedup_objects_based_on_iou(
+                complete_labels, complete_masks_binary)
+
+            new_scores = complete_scores.new_zeros((keep_num))
+            new_labels = complete_labels.new_zeros((keep_num))
+            new_bboxes = complete_bboxes.new_zeros((keep_num, 5))
+            new_masks_logits = complete_masks_logits.new_zeros(
+                (keep_num, h, w))
+            new_masks_score = complete_masks_score.new_zeros((keep_num, h, w))
+
+            new_rel_pairs = torch.zeros_like(complete_rel_pairs)
+            new_r_scores = complete_r_scores
+            new_r_labels = complete_r_labels
+            new_r_dists = complete_r_dists
+
+            for k, v in new2old_map.items():
+                new_scores[k] = complete_scores[v].mean(dim=0)
+                new_labels[k] = complete_labels[v[0]]
+                new_bboxes[k] = complete_bboxes[v].mean(dim=0)
+                new_masks_logits[k] = complete_masks_logits[v].mean(dim=0)
+                new_masks_score[k] = complete_masks_score[v].mean(dim=0)
+            new_masks_binary = new_masks_score > 0.8
+
+            for ii in range(complete_rel_pairs.shape[0]):
+                for jj in range(complete_rel_pairs.shape[1]):
+                    new_rel_pairs[ii,
+                                  jj] = old2new_map[complete_rel_pairs[ii, jj].item()]
+            new_triplets = torch.cat(
+                (new_rel_pairs, new_r_labels.unsqueeze(-1)), dim=1)
+
+            mask_score, mask_ids = new_masks_score.max(dim=0)
+            instance_id = 1
+            for k in range(new_labels.shape[0]):
+                pred_class = new_labels[k].to(torch.long)
+                isthing = pred_class < 80
+                mask = mask_ids == k
+                mask_area = mask.sum().item()
+                original_area = (new_masks_logits[k] >= 0.5).sum().item()
+                filter_low_score = True
+                if filter_low_score:
+                    mask = mask & (new_masks_logits[k] >= 0.5)
+                if mask_area > 0 and original_area > 0:
+                    if mask_area / original_area < 0.8:
+                        continue
+                    if not isthing:
+                        # different stuff regions of same class will be
+                        # merged here, and stuff share the instance_id 0.
+                        panoptic_seg[mask] = panoptic_seg[mask] * \
+                            0 + pred_class
+                    else:
+                        panoptic_seg[mask] = panoptic_seg[mask] * 0 + \
+                            (pred_class + instance_id * INSTANCE_OFFSET)
+                        instance_id += 1
+
+        if self.use_mask:
+            return complete_labels, complete_bboxes, complete_masks_binary, complete_rel_pairs, complete_r_scores, complete_r_labels, complete_r_dists, complete_triplets, \
+                new_labels, new_bboxes, new_masks_binary, new_rel_pairs, new_r_scores, new_r_labels, new_r_dists, new_triplets, panoptic_seg
+        else:
+            return complete_bboxes, complete_labels, complete_rel_pairs, complete_r_labels, complete_r_dists
 
     def simple_test(self, feats, img_metas, rescale=False, **kwargs):
         """Test without augmentaton.
@@ -1368,6 +1291,69 @@ class PSGMaskFormerHead(AnchorFreeHead):
         outs = self(feats, img_metas, **kwargs)
         results_list = self.get_results(*outs, img_metas, rescale=rescale)
         return results_list
+
+    def _dedup_objects_based_on_iou(self, labels, masks_binary):
+        '''
+        Parameters
+        ----------
+        labels: (K, )
+        masks_binary: (K, H, W)
+            each pixel in masks contains 0 or 1
+
+        Return
+        ------
+        keep_num: int
+        old2new_map: dict
+            {int: int}
+        new2old_map: dict
+            {int: List[int]}
+        '''
+        thing_classes = defaultdict(lambda: [])
+        thing_dedup = defaultdict(lambda: [])
+        stuff_merge = defaultdict(lambda: [])
+        for k, label in enumerate(labels):
+            if label.item() < 80:
+                thing_classes[label.item()].append(k)
+            else:
+                stuff_merge[label.item()].append(k)
+
+        masks_binary = masks_binary.to(torch.float).flatten(1)
+        for thing_ids in thing_classes.values():
+            if len(thing_ids) > 1:
+                while len(thing_ids) > 1:
+                    base_mask = masks_binary[thing_ids[0:1]]
+                    other_masks = masks_binary[thing_ids[1:]]
+                    ious = base_mask.mm(other_masks.transpose(
+                        0, 1)) / ((base_mask + other_masks) > 0).sum(-1)
+                    ids_left = []
+                    thing_dedup[thing_ids[0]].append(thing_ids[0])
+                    for iou, other_id in zip(ious[0], thing_ids[1:]):
+                        if iou > 0.5:
+                            thing_dedup[thing_ids[0]].append(other_id)
+                        else:
+                            ids_left.append(other_id)
+                    thing_ids = ids_left
+                if len(thing_ids) == 1:
+                    thing_dedup[thing_ids[0]].append(thing_ids[0])
+            else:
+                thing_dedup[thing_ids[0]].append(thing_ids[0])
+
+        keep_num = len(thing_dedup.keys()) + len(stuff_merge.keys())
+        old2new_map = dict()
+        new2old_map = dict()
+        new_id = 0
+        for thing_ids in thing_dedup.values():
+            new2old_map[new_id] = thing_ids
+            for thing_id in thing_ids:
+                old2new_map[thing_id] = new_id
+            new_id += 1
+        for stuff_ids in stuff_merge.values():
+            new2old_map[new_id] = stuff_ids
+            for stuff_id in stuff_ids:
+                old2new_map[stuff_id] = new_id
+            new_id += 1
+
+        return keep_num, old2new_map, new2old_map
 
     def _dedup_triplets_based_on_iou(self, s_labels, o_labels, r_labels, s_mask_pred, o_mask_pred):
         relation_classes = defaultdict(lambda: [])
@@ -1421,13 +1407,20 @@ class PSGMaskFormerHead(AnchorFreeHead):
         ###################
         # sub/obj/rel cls #
         ###################
+        # 0-based label input for objects, self.num_classes as default background class
         s_logits = F.softmax(s_cls_score, dim=-1)[..., :-1]
         o_logits = F.softmax(o_cls_score, dim=-1)[..., :-1]
         s_scores, s_labels = s_logits.max(-1)
         o_scores, o_labels = o_logits.max(-1)
 
-        r_lgs = F.softmax(r_cls_score, dim=-1)
+        # 1-based label input for relationships, 0 as default no relationship class
+        if self.rel_loss_cls.use_sigmoid:
+            r_cls_score[:, 0] = -9999
+            r_lgs = F.sigmoid(r_cls_score)
+        else:
+            r_lgs = F.softmax(r_cls_score, dim=-1)
         r_logits = r_lgs[..., 1:]
+        # Top K
         r_scores, r_indexes = r_logits.reshape(-1).topk(max_per_img)
         r_labels = r_indexes % self.num_relations + 1
         triplet_index = r_indexes // self.num_relations
@@ -1461,23 +1454,23 @@ class PSGMaskFormerHead(AnchorFreeHead):
         ################
         # sub/obj bbox #
         ################
-        s_det_bboxes = bbox_cxcywh_to_xyxy(s_bbox_pred)
-        s_det_bboxes[:, 0::2] = s_det_bboxes[:, 0::2] * img_shape[1]
-        s_det_bboxes[:, 1::2] = s_det_bboxes[:, 1::2] * img_shape[0]
-        s_det_bboxes[:, 0::2].clamp_(min=0, max=img_shape[1])
-        s_det_bboxes[:, 1::2].clamp_(min=0, max=img_shape[0])
+        s_bboxes = bbox_cxcywh_to_xyxy(s_bbox_pred)
+        s_bboxes[:, 0::2] = s_bboxes[:, 0::2] * img_shape[1]
+        s_bboxes[:, 1::2] = s_bboxes[:, 1::2] * img_shape[0]
+        s_bboxes[:, 0::2].clamp_(min=0, max=img_shape[1])
+        s_bboxes[:, 1::2].clamp_(min=0, max=img_shape[0])
         if rescale:
-            s_det_bboxes /= s_det_bboxes.new_tensor(scale_factor)
-        s_det_bboxes = torch.cat((s_det_bboxes, s_scores.unsqueeze(1)), -1)
+            s_bboxes /= s_bboxes.new_tensor(scale_factor)
+        s_bboxes = torch.cat((s_bboxes, s_scores.unsqueeze(1)), -1)
 
-        o_det_bboxes = bbox_cxcywh_to_xyxy(o_bbox_pred)
-        o_det_bboxes[:, 0::2] = o_det_bboxes[:, 0::2] * img_shape[1]
-        o_det_bboxes[:, 1::2] = o_det_bboxes[:, 1::2] * img_shape[0]
-        o_det_bboxes[:, 0::2].clamp_(min=0, max=img_shape[1])
-        o_det_bboxes[:, 1::2].clamp_(min=0, max=img_shape[0])
+        o_bboxes = bbox_cxcywh_to_xyxy(o_bbox_pred)
+        o_bboxes[:, 0::2] = o_bboxes[:, 0::2] * img_shape[1]
+        o_bboxes[:, 1::2] = o_bboxes[:, 1::2] * img_shape[0]
+        o_bboxes[:, 0::2].clamp_(min=0, max=img_shape[1])
+        o_bboxes[:, 1::2].clamp_(min=0, max=img_shape[0])
         if rescale:
-            o_det_bboxes /= o_det_bboxes.new_tensor(scale_factor)
-        o_det_bboxes = torch.cat((o_det_bboxes, o_scores.unsqueeze(1)), -1)
+            o_bboxes /= o_bboxes.new_tensor(scale_factor)
+        o_bboxes = torch.cat((o_bboxes, o_scores.unsqueeze(1)), -1)
 
         ################
         # sub/obj mask #
@@ -1489,20 +1482,33 @@ class PSGMaskFormerHead(AnchorFreeHead):
         s_mask_pred = torch.sigmoid(s_mask_pred) > 0.85
         o_mask_pred = torch.sigmoid(o_mask_pred) > 0.85
 
-        ### triplets deduplicate ###
+        ########################
+        # triplets deduplicate #
+        ########################
         keep_tri = self._dedup_triplets_based_on_iou(
             s_labels, o_labels, r_labels, s_mask_pred, o_mask_pred)
 
-        scores = torch.cat((s_scores[keep_tri], o_scores[keep_tri]), 0)
-        # object, (2*n)
-        labels = torch.cat((s_labels[keep_tri], o_labels[keep_tri]), 0)
+        ###################
+        # complete output #
+        ###################
+        # object score, (2*n, )
+        s_scores = s_scores[keep_tri]
+        o_scores = o_scores[keep_tri]
+        scores = torch.cat((s_scores, o_scores), 0)
+        # object label, (2*n, )
+        s_labels = s_labels[keep_tri]
+        o_labels = o_labels[keep_tri]
+        labels = torch.cat((s_labels, o_labels), 0)
         # object bbox, (2*n, 5)
-        det_bboxes = torch.cat(
-            (s_det_bboxes[keep_tri], o_det_bboxes[keep_tri]), 0)
+        s_bboxes = s_bboxes[keep_tri]
+        o_bboxes = o_bboxes[keep_tri]
+        bboxes = torch.cat((s_bboxes, o_bboxes), 0)
         # object mask, (2*n, h, w)
-        output_masks = torch.cat(
-            (s_mask_pred[keep_tri], o_mask_pred[keep_tri]), 0)
-        # relation (n)
+        s_mask_pred = s_mask_pred[keep_tri]
+        o_mask_pred = o_mask_pred[keep_tri]
+        masks = torch.cat(
+            (s_mask_pred, o_mask_pred), 0)
+        # relation (n, )
         r_labels = r_labels[keep_tri]
         r_scores = r_scores[keep_tri]
         r_dists = r_dists[keep_tri]
@@ -1511,4 +1517,4 @@ class PSGMaskFormerHead(AnchorFreeHead):
                                  dtype=r_labels.dtype,
                                  device=r_labels.device).reshape(2, -1).T
 
-        return rel_pairs, labels, scores, det_bboxes, output_masks, r_labels, r_scores, r_dists
+        return rel_pairs, labels, scores, bboxes, masks, r_labels, r_scores, r_dists

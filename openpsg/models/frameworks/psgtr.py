@@ -51,7 +51,7 @@ def triplet2Result(triplets, use_mask, eval_pan_rels=os.getenv('EVAL_PAN_RELS', 
                           rels=rels)
         else:
             return Result(refine_bboxes=bboxes,  # (2*n, 5)
-                          labels=labels,  # (2*n)
+                          labels=labels+1,  # (2*n)
                           formatted_masks=dict(
                               pan_results=pan_seg),  # (h, w)
                           rel_pair_idxes=rel_pairs,  # (n, 2)

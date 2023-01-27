@@ -1,17 +1,11 @@
 # Copyright (c) OpenMMLab. All rights reserved.
 import warnings
 
-import mmcv
-import numpy as np
 import torch
 import torch.nn.functional as F
-from detectron2.utils.visualizer import VisImage, Visualizer
-from mmdet.datasets.coco_panoptic import INSTANCE_OFFSET
 from mmdet.models import DETECTORS, SingleStageDetector
 
-from openpsg.models.relation_heads.approaches import Result
-from openpsg.models.frameworks.psgtr import triplet2Result
-from openpsg.utils.utils import adjust_text_color, draw_text, get_colormap
+from openpsg.models.frameworks.psgmaskformer import triplet2Result
 
 
 @DETECTORS.register_module()
