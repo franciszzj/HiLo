@@ -1,4 +1,5 @@
 import os.path as osp
+import copy
 import random
 from collections import defaultdict
 
@@ -300,6 +301,7 @@ class PanopticSceneGraphDataset(CocoPanopticDataset):
                     if [i, j] not in sub_obj_pair_list:
                         gt_no_rels.append([i, j, 0])
             gt_no_rels = np.array(gt_no_rels)
+            gt_rels_cat = copy.deepcopy(gt_rels)
             if gt_rels.shape[0] + gt_no_rels.shape[0] > 100:
                 gt_no_rels_ids = [i for i in range(gt_no_rels.shape[0])]
                 gt_no_rels_select_ids = random.sample(
