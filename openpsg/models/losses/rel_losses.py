@@ -10,6 +10,7 @@ class MultiLabelLoss(nn.Module):
         super(MultiLabelLoss, self).__init__()
         self.loss_weight = loss_weight
         self.loss_alpha = loss_alpha
+        self.use_sigmoid = kwargs.get('use_sigmoid', True)
 
     def forward(self, inputs, targets, weights, avg_factor):
         '''
