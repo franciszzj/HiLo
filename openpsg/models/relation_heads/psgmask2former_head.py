@@ -9,21 +9,19 @@ import pickle
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-import torchvision
 from mmcv.cnn import Conv2d, Linear, build_plugin_layer, caffe2_xavier_init
 from mmcv.cnn.bricks.transformer import (build_positional_encoding,
                                          build_transformer_layer_sequence)
 from mmcv.ops import point_sample
 from mmcv.runner import force_fp32, ModuleList
 
-from mmdet.core import (build_assigner, build_sampler, multi_apply, reduce_mean,
-                        bbox_cxcywh_to_xyxy, bbox_xyxy_to_cxcywh)
-from mmdet.datasets.coco_panoptic import INSTANCE_OFFSET
+from mmdet.core import build_assigner, build_sampler
 from mmdet.models.utils import get_uncertain_point_coords_with_randomness
 from mmdet.models.builder import HEADS, build_loss
 from mmdet.models.dense_heads import AnchorFreeHead
 from openpsg.models.relation_heads.psgmaskformer_head import PSGMaskFormerHead
 from openpsg.models.relation_heads.psgtr_head import MLP
+from openpsg.models.losses.rel_losses import InconsistencyLoss
 
 if (os.getenv('SAVE_PREDICT', 'false').lower() == 'true') or \
         (os.getenv('MERGE_PREDICT', 'false').lower() == 'true'):
@@ -59,6 +57,8 @@ class PSGMask2FormerHead(PSGMaskFormerHead):
                  transformer_decoder=None,
                  decoder_cfg=dict(use_query_pred=True,
                                   ignore_masked_attention_layers=[]),
+                 use_inconsistency_loss=False,
+                 inconsistency_loss_weight=1.0,
                  aux_loss_list=[0, 1, 2, 3, 4, 5, 6, 7],
                  sub_loss_cls=dict(type='CrossEntropyLoss',
                                    use_sigmoid=False,
@@ -103,13 +103,13 @@ class PSGMask2FormerHead(PSGMaskFormerHead):
         self.use_decoder_for_relation_query = use_decoder_for_relation_query
         self.mask_self_attn_interact_of_diff_query_types = mask_self_attn_interact_of_diff_query_types
         self.decoder_cfg = decoder_cfg
+        self.use_inconsistency_loss = use_inconsistency_loss
+        self.inconsistency_loss_weight = inconsistency_loss_weight
         self.aux_loss_list = aux_loss_list
         self.train_cfg = train_cfg
         self.test_cfg = test_cfg
 
         # 2. Head, Pixel and Transformer Decoder
-        self.num_heads = transformer_decoder.transformerlayers.attn_cfgs.num_heads
-        self.num_transformer_decoder_layers = transformer_decoder.num_layers
         assert pixel_decoder.encoder.transformerlayers.\
             attn_cfgs.num_levels == num_transformer_feat_level
         pixel_decoder_ = copy.deepcopy(pixel_decoder)
@@ -118,6 +118,9 @@ class PSGMask2FormerHead(PSGMaskFormerHead):
             feat_channels=feat_channels,
             out_channels=out_channels)
         self.pixel_decoder = build_plugin_layer(pixel_decoder_)[1]
+
+        self.num_heads = transformer_decoder.transformerlayers.attn_cfgs.num_heads
+        self.num_transformer_decoder_layers = transformer_decoder.num_layers
         self.transformer_decoder = build_transformer_layer_sequence(
             transformer_decoder)
         self.decoder_embed_dims = self.transformer_decoder.embed_dims
@@ -133,8 +136,10 @@ class PSGMask2FormerHead(PSGMaskFormerHead):
             else:
                 self.decoder_input_projs.append(nn.Identity())
         self.decoder_pe = build_positional_encoding(positional_encoding)
-        self.query_embed = nn.Embedding(self.num_queries, out_channels)
-        self.query_feat = nn.Embedding(self.num_queries, feat_channels)
+        self.query_embed = nn.Embedding(
+            self.num_queries, out_channels)
+        self.query_feat = nn.Embedding(
+            self.num_queries, feat_channels)
         # from low resolution to high resolution
         self.level_embed = nn.Embedding(self.num_transformer_feat_level,
                                         feat_channels)
@@ -275,6 +280,10 @@ class PSGMask2FormerHead(PSGMaskFormerHead):
         self.obj_loss_dice = build_loss(obj_loss_dice)  # mask
         self.rel_loss_cls = build_loss(rel_loss_cls)  # rel
 
+        if self.use_inconsistency_loss:
+            self.inconsistency_loss = InconsistencyLoss(
+                loss_weight=self.inconsistency_loss_weight)
+
     def init_weights(self):
         for m in self.decoder_input_projs:
             if isinstance(m, Conv2d):
@@ -285,6 +294,16 @@ class PSGMask2FormerHead(PSGMaskFormerHead):
         for p in self.transformer_decoder.parameters():
             if p.dim() > 1:
                 nn.init.xavier_uniform_(p)
+
+    def loss_aux(self, all_inconsistency_feat, **kwargs):
+        loss_dict = dict()
+        if self.use_inconsistency_loss and all_inconsistency_feat is not None:
+            loss_dict['inconsistency_loss'] = self.inconsistency_loss(
+                all_inconsistency_feat[-1])
+            # for i, inconsistency_feat in enumerate(all_inconsistency_feat[:-1]):
+            #     loss = self.inconsistency_loss(inconsistency_feat)
+            #     loss_dict['d{}.inconsistency_loss'.format(i)] = loss
+        return loss_dict
 
     def forward_head(self, decoder_out, relation_decoder_out, mask_feature, attn_mask_target_size, decoder_layer_idx=0):
         """Forward for head part which is called after every decoder layer.
@@ -483,6 +502,9 @@ class PSGMask2FormerHead(PSGMaskFormerHead):
         ignore_masked_attention_layers = self.decoder_cfg.get(
             'ignore_masked_attention_layers', [])
 
+        if self.use_inconsistency_loss:
+            inconsistency_feat_list = []
+
         for i in range(self.num_transformer_decoder_layers):
             level_idx = i % self.num_transformer_feat_level
             # if a mask is all True(all background), then set it all False.
@@ -541,6 +563,16 @@ class PSGMask2FormerHead(PSGMaskFormerHead):
                 mask_pred_list.append(mask_pred)
             else:
                 cross_attn_mask = None
+
+            if (i in self.aux_loss_list) or (i+1 == self.num_transformer_decoder_layers):
+                if self.use_inconsistency_loss:
+                    inconsistency_cat_list = []
+                    query_feat_ = torch.reshape(
+                        query_feat, (self.num_queries, -1))
+                    inconsistency_cat_list.append(query_feat_)
+                    inconsistency_feat = torch.cat(
+                        inconsistency_cat_list, dim=0)
+                    inconsistency_feat_list.append(inconsistency_feat)
 
         all_s_cls_scores = []
         all_o_cls_scores = []
@@ -715,4 +747,14 @@ class PSGMask2FormerHead(PSGMaskFormerHead):
                 obj=value1['all_mask_preds']['obj'] * w1 + value2['all_mask_preds']['obj'] * w2,  # noqa
             )
 
-        return all_cls_scores, all_bbox_preds, all_mask_preds
+        output_dict = dict()
+        output_dict['all_cls_scores'] = all_cls_scores
+        output_dict['all_bbox_preds'] = all_bbox_preds
+        output_dict['all_mask_preds'] = all_mask_preds
+
+        if self.use_inconsistency_loss:
+            output_dict['all_inconsistency_feat'] = inconsistency_feat_list
+        else:
+            output_dict['all_inconsistency_feat'] = None
+
+        return output_dict

@@ -44,3 +44,31 @@ class MultiLabelLoss(nn.Module):
         neg_loss = torch.logsumexp(y_pred_neg, dim=-1)
         pos_loss = torch.logsumexp(y_pred_pos, dim=-1)
         return neg_loss + pos_loss
+
+
+class InconsistencyLoss(nn.Module):
+    def __init__(self, loss_weight=1.0, alpha=0.01, beta=0.01):
+        super(InconsistencyLoss, self).__init__()
+        self.loss_weight = loss_weight
+        self.alpha = alpha
+        self.beta = beta
+
+    def forward(self, inconsistency_feat):
+        '''
+        inconsistency_feat: (N, C)
+        '''
+        inconsistency_feat = F.normalize(inconsistency_feat)
+        inconsistency_dist = inconsistency_feat @ inconsistency_feat.transpose(0, 1)  # noqa
+        nan_idx = torch.isnan(inconsistency_dist)
+        inconsistency_dist[nan_idx] = 0.
+        inf_idx = torch.isinf(inconsistency_dist)
+        inconsistency_dist[inf_idx] = 0.
+        inconsistency_dist = inconsistency_dist - torch.diag_embed(inconsistency_dist)  # noqa
+        inconsistency_dist = inconsistency_dist + torch.eye(inconsistency_dist.shape[0],
+                                                            dtype=inconsistency_dist.dtype,
+                                                            device=inconsistency_dist.device)
+
+        loss = (-torch.log(inconsistency_dist+self.alpha) +
+                self.beta) * self.loss_weight
+        loss = loss.mean()
+        return loss

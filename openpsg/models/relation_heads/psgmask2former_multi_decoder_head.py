@@ -10,16 +10,13 @@ import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-import torchvision
 from mmcv.cnn import Conv2d, Linear, build_plugin_layer, caffe2_xavier_init
 from mmcv.cnn.bricks.transformer import (build_positional_encoding,
                                          build_transformer_layer_sequence)
 from mmcv.ops import point_sample
 from mmcv.runner import force_fp32, ModuleList
 
-from mmdet.core import (build_assigner, build_sampler, multi_apply, reduce_mean,
-                        bbox_cxcywh_to_xyxy, bbox_xyxy_to_cxcywh)
-from mmdet.datasets.coco_panoptic import INSTANCE_OFFSET
+from mmdet.core import build_assigner, build_sampler, multi_apply
 from mmdet.models.utils import get_uncertain_point_coords_with_randomness
 from mmdet.models.builder import HEADS, build_loss
 from mmdet.models.dense_heads import AnchorFreeHead
@@ -27,6 +24,7 @@ from openpsg.models.relation_heads.psgmaskformer_head import PSGMaskFormerHead
 from openpsg.models.relation_heads.psgtr_head import MLP
 from openpsg.models.relation_heads.approaches import Result
 from openpsg.models.frameworks.psgmaskformer import triplet2Result
+from openpsg.models.losses.rel_losses import InconsistencyLoss
 
 
 @HEADS.register_module()
@@ -56,7 +54,9 @@ class PSGMask2FormerMultiDecoderHead(PSGMaskFormerHead):
                  use_shared_query=False,
                  test_forward_output_type='high2low',
                  use_consistency_loss=False,
-                 consistency_loss_weight=10.0,
+                 consistency_loss_weight=1.0,
+                 use_inconsistency_loss=False,
+                 inconsistency_loss_weight=1.0,
                  use_decoder_parameter_mapping=False,
                  decoder_parameter_mapping_num_layers=3,
                  optim_global_decoder=False,
@@ -104,6 +104,8 @@ class PSGMask2FormerMultiDecoderHead(PSGMaskFormerHead):
         self.test_forward_output_type = test_forward_output_type
         self.use_consistency_loss = use_consistency_loss
         self.consistency_loss_weight = consistency_loss_weight
+        self.use_inconsistency_loss = use_inconsistency_loss
+        self.inconsistency_loss_weight = inconsistency_loss_weight
         self.use_decoder_parameter_mapping = use_decoder_parameter_mapping
         self.decoder_parameter_mapping_num_layers = decoder_parameter_mapping_num_layers
         self.optim_global_decoder = optim_global_decoder
@@ -303,6 +305,10 @@ class PSGMask2FormerMultiDecoderHead(PSGMaskFormerHead):
             self.consistency_cls_loss = nn.KLDivLoss(
                 reduction='batchmean', log_target=True)
             self.consistency_reg_loss = nn.SmoothL1Loss()
+
+        if self.use_inconsistency_loss:
+            self.inconsistency_loss = InconsistencyLoss(
+                loss_weight=self.inconsistency_loss_weight)
 
     def init_weights(self):
         for m in self.decoder_input_projs:
@@ -697,6 +703,16 @@ class PSGMask2FormerMultiDecoderHead(PSGMaskFormerHead):
 
         return loss_dict
 
+    def loss_aux(self, all_inconsistency_feat, **kwargs):
+        loss_dict = dict()
+        if self.use_inconsistency_loss and all_inconsistency_feat is not None:
+            loss_dict['inconsistency_loss'] = self.inconsistency_loss(
+                all_inconsistency_feat[-1])
+            # for i, inconsistency_feat in enumerate(all_inconsistency_feat[:-1]):
+            #     loss = self.inconsistency_loss(inconsistency_feat)
+            #     loss_dict['d{}.inconsistency_loss'.format(i)] = loss
+        return loss_dict
+
     def forward_head(self, decoder_out, mask_feature, attn_mask_target_size, decoder_layer_idx=0,
                      transformer_decoder=None, rel_cls_embed=None):
         """Forward for head part which is called after every decoder layer.
@@ -904,6 +920,9 @@ class PSGMask2FormerMultiDecoderHead(PSGMaskFormerHead):
         if self.use_decoder_parameter_mapping:
             self.update_perspective_decoder()
 
+        if self.use_inconsistency_loss:
+            inconsistency_feat_list = []
+
         for i in range(self.num_transformer_decoder_layers):
             level_idx = i % self.num_transformer_feat_level
             # if a mask is all True(all background), then set it all False.
@@ -971,22 +990,22 @@ class PSGMask2FormerMultiDecoderHead(PSGMaskFormerHead):
             if (i in self.aux_loss_list) or (i+1 == self.num_transformer_decoder_layers):
                 if self.optim_global_decoder:
                     cls_pred, bbox_pred, mask_pred, global_cross_attn_mask = self.forward_head(
-                        global_query_feat, mask_features, multi_scale_memorys[(
-                            i + 1) % self.num_transformer_feat_level].shape[-2:],
+                        global_query_feat, mask_features, multi_scale_memorys[
+                            (i + 1) % self.num_transformer_feat_level].shape[-2:],
                         decoder_layer_idx=i+1, transformer_decoder=self.global_transformer_decoder, rel_cls_embed=self.global_rel_cls_embed)
                     global_cls_pred_list.append(cls_pred)
                     global_bbox_pred_list.append(bbox_pred)
                     global_mask_pred_list.append(mask_pred)
                 cls_pred, bbox_pred, mask_pred, high2low_cross_attn_mask = self.forward_head(
-                    high2low_query_feat, mask_features, multi_scale_memorys[(
-                        i + 1) % self.num_transformer_feat_level].shape[-2:],
+                    high2low_query_feat, mask_features, multi_scale_memorys[
+                        (i + 1) % self.num_transformer_feat_level].shape[-2:],
                     decoder_layer_idx=i+1, transformer_decoder=self.high2low_transformer_decoder, rel_cls_embed=self.high2low_rel_cls_embed)
                 high2low_cls_pred_list.append(cls_pred)
                 high2low_bbox_pred_list.append(bbox_pred)
                 high2low_mask_pred_list.append(mask_pred)
                 cls_pred, bbox_pred, mask_pred, low2high_cross_attn_mask = self.forward_head(
-                    low2high_query_feat, mask_features, multi_scale_memorys[(
-                        i + 1) % self.num_transformer_feat_level].shape[-2:],
+                    low2high_query_feat, mask_features, multi_scale_memorys[
+                        (i + 1) % self.num_transformer_feat_level].shape[-2:],
                     decoder_layer_idx=i+1, transformer_decoder=self.low2high_transformer_decoder, rel_cls_embed=self.low2high_rel_cls_embed)
                 low2high_cls_pred_list.append(cls_pred)
                 low2high_bbox_pred_list.append(bbox_pred)
@@ -997,6 +1016,23 @@ class PSGMask2FormerMultiDecoderHead(PSGMaskFormerHead):
                 high2low_cross_attn_mask = None
                 low2high_cross_attn_mask = None
 
+            if (i in self.aux_loss_list) or (i+1 == self.num_transformer_decoder_layers):
+                if self.use_inconsistency_loss:
+                    inconsistency_cat_list = []
+                    if self.optim_global_decoder:
+                        global_query_feat_ = torch.reshape(
+                            global_query_feat, (self.num_queries, -1))
+                        inconsistency_cat_list.append(global_query_feat_)
+                    high2low_query_feat_ = torch.reshape(
+                        high2low_query_feat, (self.num_queries, -1))
+                    inconsistency_cat_list.append(high2low_query_feat_)
+                    low2high_query_feat_ = torch.reshape(
+                        low2high_query_feat, (self.num_queries, -1))
+                    inconsistency_cat_list.append(low2high_query_feat_)
+                    inconsistency_feat = torch.cat(
+                        inconsistency_cat_list, dim=0)
+                    inconsistency_feat_list.append(inconsistency_feat)
+
         if self.optim_global_decoder:
             global_all_cls_scores, global_all_bbox_preds, global_all_mask_preds = self.pack_model_outputs(
                 global_cls_pred_list, global_bbox_pred_list, global_mask_pred_list)
@@ -1005,11 +1041,15 @@ class PSGMask2FormerMultiDecoderHead(PSGMaskFormerHead):
         low2high_all_cls_scores, low2high_all_bbox_preds, low2high_all_mask_preds = self.pack_model_outputs(
             low2high_cls_pred_list, low2high_bbox_pred_list, low2high_mask_pred_list)
 
+        output_dict = dict()
         if self.optim_global_decoder:
-            return global_all_cls_scores, global_all_bbox_preds, global_all_mask_preds, \
-                high2low_all_cls_scores, high2low_all_bbox_preds, high2low_all_mask_preds, \
-                low2high_all_cls_scores, low2high_all_bbox_preds, low2high_all_mask_preds
+            output_dict['global_all_cls_scores'] = global_all_cls_scores
+            output_dict['global_all_bbox_preds'] = global_all_bbox_preds
+            output_dict['global_all_mask_preds'] = global_all_mask_preds
 
+        # It is not good to directly (soft) merge the output embedding.
+        # Because the content to be predicted by the corresponding position embedding output by the two decoders is different,
+        # the direct embedding merge here will lead to extremely poor results.
         if os.getenv('MERGE_PREDICT', 'false').lower() == 'true' and not self.training:
             merge_type = 'soft_merge'
             if merge_type == 'hard_merge':
@@ -1058,9 +1098,28 @@ class PSGMask2FormerMultiDecoderHead(PSGMaskFormerHead):
                     'sub': high2low_all_mask_preds['sub'] * 0.5 + low2high_all_mask_preds['sub'] * 0.5,
                     'obj': high2low_all_mask_preds['obj'] * 0.5 + low2high_all_mask_preds['obj'] * 0.5, }
 
-            return all_cls_scores, all_bbox_preds, all_mask_preds, all_cls_scores, all_bbox_preds, all_mask_preds
+            output_dict['high2low_all_cls_scores'] = all_cls_scores
+            output_dict['high2low_all_bbox_preds'] = all_bbox_preds
+            output_dict['high2low_all_mask_preds'] = all_mask_preds
+            output_dict['low2high_all_cls_scores'] = all_cls_scores
+            output_dict['low2high_all_bbox_preds'] = all_bbox_preds
+            output_dict['low2high_all_mask_preds'] = all_mask_preds
 
-        return high2low_all_cls_scores, high2low_all_bbox_preds, high2low_all_mask_preds, low2high_all_cls_scores, low2high_all_bbox_preds, low2high_all_mask_preds
+            return output_dict
+
+        output_dict['high2low_all_cls_scores'] = high2low_all_cls_scores
+        output_dict['high2low_all_bbox_preds'] = high2low_all_bbox_preds
+        output_dict['high2low_all_mask_preds'] = high2low_all_mask_preds
+        output_dict['low2high_all_cls_scores'] = low2high_all_cls_scores
+        output_dict['low2high_all_bbox_preds'] = low2high_all_bbox_preds
+        output_dict['low2high_all_mask_preds'] = low2high_all_mask_preds
+
+        if self.use_inconsistency_loss:
+            output_dict['all_inconsistency_feat'] = inconsistency_feat_list
+        else:
+            output_dict['all_inconsistency_feat'] = None
+
+        return output_dict
 
     @torch.no_grad()
     def update_perspective_decoder(self):
@@ -1155,26 +1214,30 @@ class PSGMask2FormerMultiDecoderHead(PSGMaskFormerHead):
         # not consider ignoring bboxes
         assert gt_bboxes_ignore is None
 
-        outs = self(feats, img_metas)
         # forward
-        if self.optim_global_decoder:
-            assert len(outs) == 9, 'If optim_global_decoder=True, forward output number should be 9, but now is {}'.format(
-                len(outs))
-        else:
-            assert len(outs) == 6, 'If optim_global_decoder=False, forward output number should be 6, but now is {}'.format(
-                len(outs))
-
+        output_dict = self(feats, img_metas)
+        # label
         gts = (gt_labels, gt_bboxes, gt_masks, gt_rels, high2low_gt_rels, low2high_gt_rels, img_metas, gt_bboxes_ignore)  # noqa
         # loss
         losses_global = dict()
         if self.optim_global_decoder:
-            loss_inputs = outs[3:9] + gts
-            loss_global_inputs = outs + gts
+            loss_inputs = (
+                output_dict['high2low_all_cls_scores'], output_dict['high2low_all_bbox_preds'], output_dict['high2low_all_mask_preds'],
+                output_dict['low2high_all_cls_scores'], output_dict['low2high_all_bbox_preds'], output_dict['low2high_all_mask_preds']) + gts
+            loss_global_inputs = (
+                output_dict['global_all_cls_scores'], output_dict['global_all_bbox_preds'], output_dict['global_all_mask_preds'],
+                output_dict['high2low_all_cls_scores'], output_dict['high2low_all_bbox_preds'], output_dict['high2low_all_mask_preds'],
+                output_dict['low2high_all_cls_scores'], output_dict['low2high_all_bbox_preds'], output_dict['low2high_all_mask_preds']) + gts
             losses_global = self.loss_global(*loss_global_inputs)
         else:
-            loss_inputs = outs + gts
+            loss_inputs = (
+                output_dict['high2low_all_cls_scores'], output_dict['high2low_all_bbox_preds'], output_dict['high2low_all_mask_preds'],
+                output_dict['low2high_all_cls_scores'], output_dict['low2high_all_bbox_preds'], output_dict['low2high_all_mask_preds']) + gts
         losses = self.loss(*loss_inputs)
         losses.update(losses_global)
+        if hasattr(self, 'loss_aux'):
+            losses_aux = self.loss_aux(**output_dict)
+            losses.update(losses_aux)
 
         return losses
 
@@ -1212,23 +1275,18 @@ class PSGMask2FormerMultiDecoderHead(PSGMaskFormerHead):
                 results1_list, results2_list)]
             return results
 
-        outs = self(feats, img_metas, **kwargs)
-        if len(outs) == 6:
-            if self.test_forward_output_type == 'merge':
-                return _merge_results(outs[0:3], outs[3:6])
-            elif self.test_forward_output_type == 'high2low':
-                outs = outs[0:3]
-            elif self.test_forward_output_type == 'low2high':
-                outs = outs[3:6]
-        if len(outs) == 9:
-            if self.test_forward_output_type == 'merge':
-                return _merge_results(outs[3:6], outs[6:9])
-            elif self.test_forward_output_type == 'global':
-                outs = outs[0:3]
-            elif self.test_forward_output_type == 'high2low':
-                outs = outs[3:6]
-            elif self.test_forward_output_type == 'low2high':
-                outs = outs[6:9]
+        output_dict = self(feats, img_metas, **kwargs)
+        if self.test_forward_output_type == 'merge':
+            return _merge_results(
+                (output_dict['high2low_all_cls_scores'], output_dict['high2low_all_bbox_preds'], output_dict['high2low_all_mask_preds']),  # noqa
+                (output_dict['low2high_all_cls_scores'], output_dict['low2high_all_bbox_preds'], output_dict['low2high_all_mask_preds']))
+        elif self.test_forward_output_type == 'global':
+            outs = (output_dict['global_all_cls_scores'], output_dict['global_all_bbox_preds'], output_dict['global_all_mask_preds'])  # noqa
+        elif self.test_forward_output_type == 'high2low':
+            outs = (output_dict['high2low_all_cls_scores'], output_dict['high2low_all_bbox_preds'], output_dict['high2low_all_mask_preds'])  # noqa
+        elif self.test_forward_output_type == 'low2high':
+            outs = (output_dict['low2high_all_cls_scores'], output_dict['low2high_all_bbox_preds'], output_dict['low2high_all_mask_preds'])  # noqa
+
         results_list = self.get_results(*outs, img_metas, rescale=rescale)
         return results_list
 

@@ -975,7 +975,12 @@ class PSGMaskFormerHead(AnchorFreeHead):
         all_mask_preds = dict(sub=sub_outputs_mask,
                               obj=obj_outputs_mask)
 
-        return all_cls_scores, all_bbox_preds, all_mask_preds
+        output_dict = dict()
+        output_dict['all_cls_scores'] = all_cls_scores
+        output_dict['all_bbox_preds'] = all_bbox_preds
+        output_dict['all_mask_preds'] = all_mask_preds
+
+        return output_dict
 
     def forward_train(self,
                       feats,
@@ -1013,12 +1018,15 @@ class PSGMaskFormerHead(AnchorFreeHead):
         assert gt_bboxes_ignore is None
 
         # forward
-        all_cls_scores, all_bbox_preds, all_mask_preds = self(feats, img_metas)
+        output_dict = self(feats, img_metas)
 
         # loss
-        loss_inputs = (all_cls_scores, all_bbox_preds, all_mask_preds) + \
+        loss_inputs = (output_dict['all_cls_scores'], output_dict['all_bbox_preds'], output_dict['all_mask_preds']) + \
             (gt_labels, gt_bboxes, gt_masks, gt_rels, img_metas, gt_bboxes_ignore)
         losses = self.loss(*loss_inputs)
+        if hasattr(self, 'loss_aux'):
+            losses_aux = self.loss_aux(**output_dict)
+            losses.update(losses_aux)
 
         return losses
 
@@ -1286,7 +1294,8 @@ class PSGMaskFormerHead(AnchorFreeHead):
             - mask_pred_results (Tensor): Mask logits, shape \
                 (batch_size, num_queries, h, w).
         """
-        outs = self(feats, img_metas, **kwargs)
+        output_dict = self(feats, img_metas, **kwargs)
+        outs = (output_dict['all_cls_scores'], output_dict['all_bbox_preds'], output_dict['all_mask_preds'])
         results_list = self.get_results(*outs, img_metas, rescale=rescale)
         return results_list
 
