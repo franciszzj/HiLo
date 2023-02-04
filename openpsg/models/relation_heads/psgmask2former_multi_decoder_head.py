@@ -55,6 +55,7 @@ class PSGMask2FormerMultiDecoderHead(PSGMaskFormerHead):
                  test_forward_output_type='high2low',
                  use_consistency_loss=False,
                  consistency_loss_type='v0',
+                 consistency_loss_only_on_last_layer=False,
                  consistency_loss_weight=1.0,
                  use_inconsistency_loss=False,
                  inconsistency_loss_weight=1.0,
@@ -105,6 +106,7 @@ class PSGMask2FormerMultiDecoderHead(PSGMaskFormerHead):
         self.test_forward_output_type = test_forward_output_type
         self.use_consistency_loss = use_consistency_loss
         self.consistency_loss_type = consistency_loss_type
+        self.consistency_loss_only_on_last_layer = consistency_loss_only_on_last_layer
         self.consistency_loss_weight = consistency_loss_weight
         self.use_inconsistency_loss = use_inconsistency_loss
         self.inconsistency_loss_weight = inconsistency_loss_weight
@@ -615,21 +617,73 @@ class PSGMask2FormerMultiDecoderHead(PSGMaskFormerHead):
                 low2high_pos_inds = torch.stack(low2high_pos_inds)
 
                 # Easy to understand code, but not very efficient with two `for` loops.
-                '''
-                for layer_i in range(num_dec_layers):
-                    for label_i in range(gt_rels_list[0].shape[0]):
-                        high2low_idx = torch.nonzero(torch.where(high2low_pos_assigned_gt_inds[layer_i] == label_i, torch.ones_like(high2low_pos_assigned_gt_inds[layer_i]), torch.zeros_like(high2low_pos_assigned_gt_inds[layer_i]))).flatten()  # noqa
-                        low2high_idx = torch.nonzero(torch.where(low2high_pos_assigned_gt_inds[layer_i] == label_i, torch.ones_like(low2high_pos_assigned_gt_inds[layer_i]), torch.zeros_like(low2high_pos_assigned_gt_inds[layer_i]))).flatten()  # noqa
-                        high2low_idx2 = high2low_pos_inds[layer_i][high2low_idx].flatten()  # noqa
-                        low2high_idx2 = low2high_pos_inds[layer_i][low2high_idx].flatten()  # noqa
+                # for layer_i in range(num_dec_layers):
+                if self.consistency_loss_only_on_last_layer:
+                    for layer_i in range(num_dec_layers-1, num_dec_layers):
+                        for label_i in range(gt_rels_list[0].shape[0]):
+                            high2low_idx = torch.nonzero(torch.where(high2low_pos_assigned_gt_inds[layer_i] == label_i, torch.ones_like(high2low_pos_assigned_gt_inds[layer_i]), torch.zeros_like(high2low_pos_assigned_gt_inds[layer_i]))).flatten()  # noqa
+                            low2high_idx = torch.nonzero(torch.where(low2high_pos_assigned_gt_inds[layer_i] == label_i, torch.ones_like(low2high_pos_assigned_gt_inds[layer_i]), torch.zeros_like(low2high_pos_assigned_gt_inds[layer_i]))).flatten()  # noqa
+                            high2low_idx2 = high2low_pos_inds[layer_i][high2low_idx].flatten()  # noqa
+                            low2high_idx2 = low2high_pos_inds[layer_i][low2high_idx].flatten()  # noqa
 
-                        this_high2low_s_cls = high2low_all_s_cls_scores[layer_i][0, high2low_idx2].softmax(-1)  # (1, 134)  # noqa
-                        this_high2low_o_cls = high2low_all_o_cls_scores[layer_i][0, high2low_idx2].softmax(-1)  # (1, 134)  # noqa
-                        this_high2low_s_bbox = high2low_all_s_bbox_preds[layer_i][0, high2low_idx2]  # (1, 4)  # noqa
-                        this_high2low_o_bbox = high2low_all_o_bbox_preds[layer_i][0, high2low_idx2]  # (1, 4)  # noqa
-                        this_high2low_s_mask = high2low_all_s_mask_preds[layer_i][0, high2low_idx2].sigmoid()  # (1, h, w)  # noqa
-                        this_high2low_o_mask = high2low_all_o_mask_preds[layer_i][0, high2low_idx2].sigmoid()  # (1, h, w)  # noqa
-                        this_high2low_r_cls = high2low_all_r_cls_scores[layer_i][0, high2low_idx2].softmax(-1)  # (1, 57)  # noqa
+                            this_high2low_s_cls = high2low_all_s_cls_scores[layer_i][0, high2low_idx2].softmax(-1)  # (1, 134)  # noqa
+                            this_high2low_o_cls = high2low_all_o_cls_scores[layer_i][0, high2low_idx2].softmax(-1)  # (1, 134)  # noqa
+                            this_high2low_s_bbox = high2low_all_s_bbox_preds[layer_i][0, high2low_idx2]  # (1, 4)  # noqa
+                            this_high2low_o_bbox = high2low_all_o_bbox_preds[layer_i][0, high2low_idx2]  # (1, 4)  # noqa
+                            this_high2low_s_mask = high2low_all_s_mask_preds[layer_i][0, high2low_idx2].sigmoid()  # (1, h, w)  # noqa
+                            this_high2low_o_mask = high2low_all_o_mask_preds[layer_i][0, high2low_idx2].sigmoid()  # (1, h, w)  # noqa
+                            this_high2low_r_cls = high2low_all_r_cls_scores[layer_i][0, high2low_idx2].softmax(-1)  # (1, 57)  # noqa
+                            high2low_s_cls.append(this_high2low_s_cls)
+                            high2low_o_cls.append(this_high2low_o_cls)
+                            high2low_s_bbox.append(this_high2low_s_bbox)
+                            high2low_o_bbox.append(this_high2low_o_bbox)
+                            high2low_s_mask.append(this_high2low_s_mask)
+                            high2low_o_mask.append(this_high2low_o_mask)
+                            high2low_r_cls.append(this_high2low_r_cls)
+
+                            this_low2high_s_cls = low2high_all_s_cls_scores[layer_i][0, low2high_idx2].softmax(-1)  # (1, 134)  # noqa
+                            this_low2high_o_cls = low2high_all_o_cls_scores[layer_i][0, low2high_idx2].softmax(-1)  # (1, 134)  # noqa
+                            this_low2high_s_bbox = low2high_all_s_bbox_preds[layer_i][0, low2high_idx2]  # (1, 4)  # noqa
+                            this_low2high_o_bbox = low2high_all_o_bbox_preds[layer_i][0, low2high_idx2]  # (1, 4)  # noqa
+                            this_low2high_s_mask = low2high_all_s_mask_preds[layer_i][0, low2high_idx2].sigmoid()  # (1, h, w)  # noqa
+                            this_low2high_o_mask = low2high_all_o_mask_preds[layer_i][0, low2high_idx2].sigmoid()  # (1, h, w)  # noqa
+                            this_low2high_r_cls = low2high_all_r_cls_scores[layer_i][0, low2high_idx2].softmax(-1)  # (1, 57)  # noqa
+                            low2high_s_cls.append(this_low2high_s_cls)
+                            low2high_o_cls.append(this_low2high_o_cls)
+                            low2high_s_bbox.append(this_low2high_s_bbox)
+                            low2high_o_bbox.append(this_low2high_o_bbox)
+                            low2high_s_mask.append(this_low2high_s_mask)
+                            low2high_o_mask.append(this_low2high_o_mask)
+                            low2high_r_cls.append(this_low2high_r_cls)
+
+                            this_high2low_rel = high2low_gt_rels_list[0][label_i][2]
+                            this_low2high_rel = high2low_gt_rels_list[0][label_i][2]
+                            if this_high2low_rel == this_low2high_rel:
+                                r_label.append(1)
+                            else:
+                                r_label.append(-1)
+                else:
+                    # This version is not easy to understand, but there is only one `for` loop, and the efficiency is improved.
+                    for label_i in range(gt_rels_list[0].shape[0]):
+                        high2low_idx = torch.nonzero(torch.where(high2low_pos_assigned_gt_inds == label_i, torch.ones_like(high2low_pos_assigned_gt_inds), torch.zeros_like(high2low_pos_assigned_gt_inds)))  # noqa
+                        low2high_idx = torch.nonzero(torch.where(low2high_pos_assigned_gt_inds == label_i, torch.ones_like(low2high_pos_assigned_gt_inds), torch.zeros_like(low2high_pos_assigned_gt_inds)))  # noqa
+                        high2low_idx2 = torch.take(high2low_pos_inds, high2low_idx[:, 0] * high2low_pos_inds.shape[1] + high2low_idx[:, 1])  # noqa
+                        low2high_idx2 = torch.take(low2high_pos_inds, low2high_idx[:, 0] * low2high_pos_inds.shape[1] + low2high_idx[:, 1])  # noqa
+
+                        high2low_s_cls_mask = F.one_hot(high2low_idx2.reshape([num_dec_layers, 1]), num_classes=self.num_queries).unsqueeze(-1).expand(-1, -1, -1, high2low_all_s_cls_scores.shape[-1]).bool()  # noqa
+                        this_high2low_s_cls = torch.masked_select(high2low_all_s_cls_scores, high2low_s_cls_mask).reshape((num_dec_layers, -1)).softmax(-1)  # noqa
+                        high2low_o_cls_mask = F.one_hot(high2low_idx2.reshape([num_dec_layers, 1]), num_classes=self.num_queries).unsqueeze(-1).expand(-1, -1, -1, high2low_all_o_cls_scores.shape[-1]).bool()  # noqa
+                        this_high2low_o_cls = torch.masked_select(high2low_all_o_cls_scores, high2low_o_cls_mask).reshape((num_dec_layers, -1)).softmax(-1)  # noqa
+                        high2low_s_bbox_mask = F.one_hot(high2low_idx2.reshape([num_dec_layers, 1]), num_classes=self.num_queries).unsqueeze(-1).expand(-1, -1, -1, high2low_all_s_bbox_preds.shape[-1]).bool()  # noqa
+                        this_high2low_s_bbox = torch.masked_select(high2low_all_s_bbox_preds, high2low_s_bbox_mask).reshape((num_dec_layers, -1))  # noqa
+                        high2low_o_bbox_mask = F.one_hot(high2low_idx2.reshape([num_dec_layers, 1]), num_classes=self.num_queries).unsqueeze(-1).expand(-1, -1, -1, high2low_all_o_bbox_preds.shape[-1]).bool()  # noqa
+                        this_high2low_o_bbox = torch.masked_select(high2low_all_o_bbox_preds, high2low_o_bbox_mask).reshape((num_dec_layers, -1))  # noqa
+                        high2low_s_mask_mask = F.one_hot(high2low_idx2.reshape([num_dec_layers, 1]), num_classes=self.num_queries).unsqueeze(-1).expand(-1, -1, -1, high2low_all_s_mask_preds.shape[-2] * high2low_all_s_mask_preds.shape[-1]).bool()  # noqa
+                        this_high2low_s_mask = torch.masked_select(high2low_all_s_mask_preds.reshape(num_dec_layers, 1, self.num_queries, -1), high2low_s_mask_mask).reshape((num_dec_layers, -1)).sigmoid()  # noqa
+                        high2low_o_mask_mask = F.one_hot(high2low_idx2.reshape([num_dec_layers, 1]), num_classes=self.num_queries).unsqueeze(-1).expand(-1, -1, -1, high2low_all_o_mask_preds.shape[-2] * high2low_all_o_mask_preds.shape[-1]).bool()  # noqa
+                        this_high2low_o_mask = torch.masked_select(high2low_all_o_mask_preds.reshape(num_dec_layers, 1, self.num_queries, -1), high2low_o_mask_mask).reshape((num_dec_layers, -1)).sigmoid()  # noqa
+                        high2low_r_cls_mask = F.one_hot(high2low_idx2.reshape([num_dec_layers, 1]), num_classes=self.num_queries).unsqueeze(-1).expand(-1, -1, -1, high2low_all_r_cls_scores.shape[-1]).bool()  # noqa
+                        this_high2low_r_cls = torch.masked_select(high2low_all_r_cls_scores, high2low_r_cls_mask).reshape((num_dec_layers, -1)).softmax(-1)  # noqa
                         high2low_s_cls.append(this_high2low_s_cls)
                         high2low_o_cls.append(this_high2low_o_cls)
                         high2low_s_bbox.append(this_high2low_s_bbox)
@@ -638,13 +692,20 @@ class PSGMask2FormerMultiDecoderHead(PSGMaskFormerHead):
                         high2low_o_mask.append(this_high2low_o_mask)
                         high2low_r_cls.append(this_high2low_r_cls)
 
-                        this_low2high_s_cls = low2high_all_s_cls_scores[layer_i][0, low2high_idx2].softmax(-1)  # (1, 134)  # noqa
-                        this_low2high_o_cls = low2high_all_o_cls_scores[layer_i][0, low2high_idx2].softmax(-1)  # (1, 134)  # noqa
-                        this_low2high_s_bbox = low2high_all_s_bbox_preds[layer_i][0, low2high_idx2]  # (1, 4)  # noqa
-                        this_low2high_o_bbox = low2high_all_o_bbox_preds[layer_i][0, low2high_idx2]  # (1, 4)  # noqa
-                        this_low2high_s_mask = low2high_all_s_mask_preds[layer_i][0, low2high_idx2].sigmoid()  # (1, h, w)  # noqa
-                        this_low2high_o_mask = low2high_all_o_mask_preds[layer_i][0, low2high_idx2].sigmoid()  # (1, h, w)  # noqa
-                        this_low2high_r_cls = low2high_all_r_cls_scores[layer_i][0, low2high_idx2].softmax(-1)  # (1, 57)  # noqa
+                        low2high_s_cls_mask = F.one_hot(low2high_idx2.reshape([num_dec_layers, 1]), num_classes=self.num_queries).unsqueeze(-1).expand(-1, -1, -1, low2high_all_s_cls_scores.shape[-1]).bool()  # noqa
+                        this_low2high_s_cls = torch.masked_select(low2high_all_s_cls_scores, low2high_s_cls_mask).reshape((num_dec_layers, -1)).softmax(-1)  # noqa
+                        low2high_o_cls_mask = F.one_hot(low2high_idx2.reshape([num_dec_layers, 1]), num_classes=self.num_queries).unsqueeze(-1).expand(-1, -1, -1, low2high_all_o_cls_scores.shape[-1]).bool()  # noqa
+                        this_low2high_o_cls = torch.masked_select(low2high_all_o_cls_scores, low2high_o_cls_mask).reshape((num_dec_layers, -1)).softmax(-1)  # noqa
+                        low2high_s_bbox_mask = F.one_hot(low2high_idx2.reshape([num_dec_layers, 1]), num_classes=self.num_queries).unsqueeze(-1).expand(-1, -1, -1, low2high_all_s_bbox_preds.shape[-1]).bool()  # noqa
+                        this_low2high_s_bbox = torch.masked_select(low2high_all_s_bbox_preds, low2high_s_bbox_mask).reshape((num_dec_layers, -1))  # noqa
+                        low2high_o_bbox_mask = F.one_hot(low2high_idx2.reshape([num_dec_layers, 1]), num_classes=self.num_queries).unsqueeze(-1).expand(-1, -1, -1, low2high_all_o_bbox_preds.shape[-1]).bool()  # noqa
+                        this_low2high_o_bbox = torch.masked_select(low2high_all_o_bbox_preds, low2high_o_bbox_mask).reshape((num_dec_layers, -1))  # noqa
+                        low2high_s_mask_mask = F.one_hot(low2high_idx2.reshape([num_dec_layers, 1]), num_classes=self.num_queries).unsqueeze(-1).expand(-1, -1, -1, low2high_all_s_mask_preds.shape[-2] * low2high_all_s_mask_preds.shape[-1]).bool()  # noqa
+                        this_low2high_s_mask = torch.masked_select(low2high_all_s_mask_preds.reshape(num_dec_layers, 1, self.num_queries, -1), low2high_s_mask_mask).reshape((num_dec_layers, -1)).sigmoid()  # noqa
+                        low2high_o_mask_mask = F.one_hot(low2high_idx2.reshape([num_dec_layers, 1]), num_classes=self.num_queries).unsqueeze(-1).expand(-1, -1, -1, low2high_all_o_mask_preds.shape[-2] * low2high_all_o_mask_preds.shape[-1]).bool()  # noqa
+                        this_low2high_o_mask = torch.masked_select(low2high_all_o_mask_preds.reshape(num_dec_layers, 1, self.num_queries, -1), low2high_o_mask_mask).reshape((num_dec_layers, -1)).sigmoid()  # noqa
+                        low2high_r_cls_mask = F.one_hot(low2high_idx2.reshape([num_dec_layers, 1]), num_classes=self.num_queries).unsqueeze(-1).expand(-1, -1, -1, low2high_all_r_cls_scores.shape[-1]).bool()  # noqa
+                        this_low2high_r_cls = torch.masked_select(low2high_all_r_cls_scores, low2high_r_cls_mask).reshape((num_dec_layers, -1)).softmax(-1)  # noqa
                         low2high_s_cls.append(this_low2high_s_cls)
                         low2high_o_cls.append(this_low2high_o_cls)
                         low2high_s_bbox.append(this_low2high_s_bbox)
@@ -656,68 +717,9 @@ class PSGMask2FormerMultiDecoderHead(PSGMaskFormerHead):
                         this_high2low_rel = high2low_gt_rels_list[0][label_i][2]
                         this_low2high_rel = high2low_gt_rels_list[0][label_i][2]
                         if this_high2low_rel == this_low2high_rel:
-                            r_label.append(1)
+                            r_label.extend([1 for _ in range(num_dec_layers)])
                         else:
-                            r_label.append(-1)
-                '''
-
-                # This version is not easy to understand, but there is only one `for` loop, and the efficiency is improved.
-                for label_i in range(gt_rels_list[0].shape[0]):
-                    high2low_idx = torch.nonzero(torch.where(high2low_pos_assigned_gt_inds == label_i, torch.ones_like(high2low_pos_assigned_gt_inds), torch.zeros_like(high2low_pos_assigned_gt_inds)))  # noqa
-                    low2high_idx = torch.nonzero(torch.where(low2high_pos_assigned_gt_inds == label_i, torch.ones_like(low2high_pos_assigned_gt_inds), torch.zeros_like(low2high_pos_assigned_gt_inds)))  # noqa
-                    high2low_idx2 = torch.take(high2low_pos_inds, high2low_idx[:, 0] * high2low_pos_inds.shape[1] + high2low_idx[:, 1])  # noqa
-                    low2high_idx2 = torch.take(low2high_pos_inds, low2high_idx[:, 0] * low2high_pos_inds.shape[1] + low2high_idx[:, 1])  # noqa
-
-                    high2low_s_cls_mask = F.one_hot(high2low_idx2.reshape([num_dec_layers, 1]), num_classes=self.num_queries).unsqueeze(-1).expand(-1, -1, -1, high2low_all_s_cls_scores.shape[-1]).bool()  # noqa
-                    this_high2low_s_cls = torch.masked_select(high2low_all_s_cls_scores, high2low_s_cls_mask).reshape((num_dec_layers, -1)).softmax(-1)  # noqa
-                    high2low_o_cls_mask = F.one_hot(high2low_idx2.reshape([num_dec_layers, 1]), num_classes=self.num_queries).unsqueeze(-1).expand(-1, -1, -1, high2low_all_o_cls_scores.shape[-1]).bool()  # noqa
-                    this_high2low_o_cls = torch.masked_select(high2low_all_o_cls_scores, high2low_o_cls_mask).reshape((num_dec_layers, -1)).softmax(-1)  # noqa
-                    high2low_s_bbox_mask = F.one_hot(high2low_idx2.reshape([num_dec_layers, 1]), num_classes=self.num_queries).unsqueeze(-1).expand(-1, -1, -1, high2low_all_s_bbox_preds.shape[-1]).bool()  # noqa
-                    this_high2low_s_bbox = torch.masked_select(high2low_all_s_bbox_preds, high2low_s_bbox_mask).reshape((num_dec_layers, -1))  # noqa
-                    high2low_o_bbox_mask = F.one_hot(high2low_idx2.reshape([num_dec_layers, 1]), num_classes=self.num_queries).unsqueeze(-1).expand(-1, -1, -1, high2low_all_o_bbox_preds.shape[-1]).bool()  # noqa
-                    this_high2low_o_bbox = torch.masked_select(high2low_all_o_bbox_preds, high2low_o_bbox_mask).reshape((num_dec_layers, -1))  # noqa
-                    high2low_s_mask_mask = F.one_hot(high2low_idx2.reshape([num_dec_layers, 1]), num_classes=self.num_queries).unsqueeze(-1).expand(-1, -1, -1, high2low_all_s_mask_preds.shape[-2] * high2low_all_s_mask_preds.shape[-1]).bool()  # noqa
-                    this_high2low_s_mask = torch.masked_select(high2low_all_s_mask_preds.reshape(num_dec_layers, 1, self.num_queries, -1), high2low_s_mask_mask).reshape((num_dec_layers, -1)).sigmoid()  # noqa
-                    high2low_o_mask_mask = F.one_hot(high2low_idx2.reshape([num_dec_layers, 1]), num_classes=self.num_queries).unsqueeze(-1).expand(-1, -1, -1, high2low_all_o_mask_preds.shape[-2] * high2low_all_o_mask_preds.shape[-1]).bool()  # noqa
-                    this_high2low_o_mask = torch.masked_select(high2low_all_o_mask_preds.reshape(num_dec_layers, 1, self.num_queries, -1), high2low_o_mask_mask).reshape((num_dec_layers, -1)).sigmoid()  # noqa
-                    high2low_r_cls_mask = F.one_hot(high2low_idx2.reshape([num_dec_layers, 1]), num_classes=self.num_queries).unsqueeze(-1).expand(-1, -1, -1, high2low_all_r_cls_scores.shape[-1]).bool()  # noqa
-                    this_high2low_r_cls = torch.masked_select(high2low_all_r_cls_scores, high2low_r_cls_mask).reshape((num_dec_layers, -1)).softmax(-1)  # noqa
-                    high2low_s_cls.append(this_high2low_s_cls)
-                    high2low_o_cls.append(this_high2low_o_cls)
-                    high2low_s_bbox.append(this_high2low_s_bbox)
-                    high2low_o_bbox.append(this_high2low_o_bbox)
-                    high2low_s_mask.append(this_high2low_s_mask)
-                    high2low_o_mask.append(this_high2low_o_mask)
-                    high2low_r_cls.append(this_high2low_r_cls)
-
-                    low2high_s_cls_mask = F.one_hot(low2high_idx2.reshape([num_dec_layers, 1]), num_classes=self.num_queries).unsqueeze(-1).expand(-1, -1, -1, low2high_all_s_cls_scores.shape[-1]).bool()  # noqa
-                    this_low2high_s_cls = torch.masked_select(low2high_all_s_cls_scores, low2high_s_cls_mask).reshape((num_dec_layers, -1)).softmax(-1)  # noqa
-                    low2high_o_cls_mask = F.one_hot(low2high_idx2.reshape([num_dec_layers, 1]), num_classes=self.num_queries).unsqueeze(-1).expand(-1, -1, -1, low2high_all_o_cls_scores.shape[-1]).bool()  # noqa
-                    this_low2high_o_cls = torch.masked_select(low2high_all_o_cls_scores, low2high_o_cls_mask).reshape((num_dec_layers, -1)).softmax(-1)  # noqa
-                    low2high_s_bbox_mask = F.one_hot(low2high_idx2.reshape([num_dec_layers, 1]), num_classes=self.num_queries).unsqueeze(-1).expand(-1, -1, -1, low2high_all_s_bbox_preds.shape[-1]).bool()  # noqa
-                    this_low2high_s_bbox = torch.masked_select(low2high_all_s_bbox_preds, low2high_s_bbox_mask).reshape((num_dec_layers, -1))  # noqa
-                    low2high_o_bbox_mask = F.one_hot(low2high_idx2.reshape([num_dec_layers, 1]), num_classes=self.num_queries).unsqueeze(-1).expand(-1, -1, -1, low2high_all_o_bbox_preds.shape[-1]).bool()  # noqa
-                    this_low2high_o_bbox = torch.masked_select(low2high_all_o_bbox_preds, low2high_o_bbox_mask).reshape((num_dec_layers, -1))  # noqa
-                    low2high_s_mask_mask = F.one_hot(low2high_idx2.reshape([num_dec_layers, 1]), num_classes=self.num_queries).unsqueeze(-1).expand(-1, -1, -1, low2high_all_s_mask_preds.shape[-2] * low2high_all_s_mask_preds.shape[-1]).bool()  # noqa
-                    this_low2high_s_mask = torch.masked_select(low2high_all_s_mask_preds.reshape(num_dec_layers, 1, self.num_queries, -1), low2high_s_mask_mask).reshape((num_dec_layers, -1)).sigmoid()  # noqa
-                    low2high_o_mask_mask = F.one_hot(low2high_idx2.reshape([num_dec_layers, 1]), num_classes=self.num_queries).unsqueeze(-1).expand(-1, -1, -1, low2high_all_o_mask_preds.shape[-2] * low2high_all_o_mask_preds.shape[-1]).bool()  # noqa
-                    this_low2high_o_mask = torch.masked_select(low2high_all_o_mask_preds.reshape(num_dec_layers, 1, self.num_queries, -1), low2high_o_mask_mask).reshape((num_dec_layers, -1)).sigmoid()  # noqa
-                    low2high_r_cls_mask = F.one_hot(low2high_idx2.reshape([num_dec_layers, 1]), num_classes=self.num_queries).unsqueeze(-1).expand(-1, -1, -1, low2high_all_r_cls_scores.shape[-1]).bool()  # noqa
-                    this_low2high_r_cls = torch.masked_select(low2high_all_r_cls_scores, low2high_r_cls_mask).reshape((num_dec_layers, -1)).softmax(-1)  # noqa
-                    low2high_s_cls.append(this_low2high_s_cls)
-                    low2high_o_cls.append(this_low2high_o_cls)
-                    low2high_s_bbox.append(this_low2high_s_bbox)
-                    low2high_o_bbox.append(this_low2high_o_bbox)
-                    low2high_s_mask.append(this_low2high_s_mask)
-                    low2high_o_mask.append(this_low2high_o_mask)
-                    low2high_r_cls.append(this_low2high_r_cls)
-
-                    this_high2low_rel = high2low_gt_rels_list[0][label_i][2]
-                    this_low2high_rel = high2low_gt_rels_list[0][label_i][2]
-                    if this_high2low_rel == this_low2high_rel:
-                        r_label.extend([1 for _ in range(num_dec_layers)])
-                    else:
-                        r_label.extend([-1 for _ in range(num_dec_layers)])
+                            r_label.extend([-1 for _ in range(num_dec_layers)])
 
                 high2low_s_cls = torch.cat(high2low_s_cls, dim=0)
                 high2low_o_cls = torch.cat(high2low_o_cls, dim=0)
