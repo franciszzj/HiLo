@@ -433,7 +433,8 @@ class PSGMaskFormerHead(AnchorFreeHead):
 
         s_losses_cls, o_losses_cls, r_losses_cls, \
             s_losses_bbox, o_losses_bbox, s_losses_iou, o_losses_iou, \
-            s_losses_focal, o_losses_focal, s_losses_dice, o_losses_dice = \
+            s_losses_focal, o_losses_focal, s_losses_dice, o_losses_dice, \
+            pos_inds, pos_assigned_gt_inds = \
             multi_apply(self.loss_single,
                         all_s_cls_scores, all_o_cls_scores, all_r_cls_scores,
                         all_s_bbox_preds, all_o_bbox_preds,
@@ -522,8 +523,14 @@ class PSGMaskFormerHead(AnchorFreeHead):
          s_bbox_targets_list, o_bbox_targets_list,
          s_bbox_weights_list, o_bbox_weights_list,
          s_mask_targets_list, o_mask_targets_list,
-         num_total_pos, num_total_neg,
+         pos_inds_list, neg_inds_list, pos_assigned_gt_inds_list,
          s_mask_preds_list, o_mask_preds_list) = cls_reg_targets
+
+        num_total_pos = sum((inds.numel() for inds in pos_inds_list))
+        num_total_neg = sum((inds.numel() for inds in neg_inds_list))
+        pos_inds = torch.cat(pos_inds_list, 0)
+        pos_assigned_gt_inds = torch.cat(pos_assigned_gt_inds_list, 0)
+
         s_labels = torch.cat(s_labels_list, 0)
         o_labels = torch.cat(o_labels_list, 0)
         r_labels = torch.cat(r_labels_list, 0)
@@ -643,7 +650,8 @@ class PSGMaskFormerHead(AnchorFreeHead):
                                          avg_factor=num_total_pos)
         return s_loss_cls, o_loss_cls, r_loss_cls, \
             s_loss_bbox, o_loss_bbox, s_loss_iou, o_loss_iou, \
-            s_focal_loss, s_dice_loss, o_focal_loss, o_dice_loss
+            s_focal_loss, s_dice_loss, o_focal_loss, o_dice_loss, \
+            pos_inds, pos_assigned_gt_inds
 
     def get_targets(self,
                     s_cls_scores_list,
@@ -672,7 +680,7 @@ class PSGMaskFormerHead(AnchorFreeHead):
          s_bbox_targets_list, o_bbox_targets_list,
          s_bbox_weights_list, o_bbox_weights_list,
          s_mask_targets_list, o_mask_targets_list,
-         pos_inds_list, neg_inds_list,
+         pos_inds_list, neg_inds_list, pos_assigned_gt_inds_list,
          s_mask_preds_list, o_mask_preds_list) = multi_apply(
              self._get_target_single,
              s_cls_scores_list, o_cls_scores_list, r_cls_scores_list,
@@ -680,14 +688,13 @@ class PSGMaskFormerHead(AnchorFreeHead):
              s_mask_preds_list, o_mask_preds_list,
              gt_rels_list, gt_bboxes_list, gt_labels_list, gt_masks_list,
              img_metas, gt_bboxes_ignore_list)
-        num_total_pos = sum((inds.numel() for inds in pos_inds_list))
-        num_total_neg = sum((inds.numel() for inds in neg_inds_list))
+
         return (s_labels_list, o_labels_list, r_labels_list,
                 s_label_weights_list, o_label_weights_list, r_label_weights_list,
                 s_bbox_targets_list, o_bbox_targets_list,
                 s_bbox_weights_list, o_bbox_weights_list,
                 s_mask_targets_list, o_mask_targets_list,
-                num_total_pos, num_total_neg,
+                pos_inds_list, neg_inds_list, pos_assigned_gt_inds_list,
                 s_mask_preds_list, o_mask_preds_list)
 
     def _get_target_single(self,
@@ -823,6 +830,7 @@ class PSGMaskFormerHead(AnchorFreeHead):
                                                 gt_obj_bboxes)
         pos_inds = o_sampling_result.pos_inds
         neg_inds = o_sampling_result.neg_inds  # no-rel class indices in prediction
+        pos_assigned_gt_inds = o_sampling_result.pos_assigned_gt_inds
 
         # label targets
         s_labels = gt_sub_bboxes.new_full(
@@ -910,7 +918,7 @@ class PSGMaskFormerHead(AnchorFreeHead):
                 s_bbox_targets, o_bbox_targets,
                 s_bbox_weights, o_bbox_weights,
                 s_mask_targets, o_mask_targets,
-                pos_inds, neg_inds,
+                pos_inds, neg_inds, pos_assigned_gt_inds,
                 s_mask_preds, o_mask_preds
                 )  # return the interpolated predicted masks
 
@@ -1295,7 +1303,9 @@ class PSGMaskFormerHead(AnchorFreeHead):
                 (batch_size, num_queries, h, w).
         """
         output_dict = self(feats, img_metas, **kwargs)
-        outs = (output_dict['all_cls_scores'], output_dict['all_bbox_preds'], output_dict['all_mask_preds'])
+        outs = (output_dict['all_cls_scores'],
+                output_dict['all_bbox_preds'],
+                output_dict['all_mask_preds'])
         results_list = self.get_results(*outs, img_metas, rescale=rescale)
         return results_list
 
