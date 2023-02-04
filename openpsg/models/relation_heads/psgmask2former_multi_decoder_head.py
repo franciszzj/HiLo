@@ -739,19 +739,19 @@ class PSGMask2FormerMultiDecoderHead(PSGMaskFormerHead):
                     device=high2low_r_cls.device)
 
                 s_cls_loss = self.consistency_mse_loss(
-                    high2low_s_cls, low2high_s_cls) * num_dec_layers * self.s_cls_loss_weight
+                    high2low_s_cls, low2high_s_cls) * num_dec_layers * self.s_cls_loss_weight * self.consistency_loss_weight
                 o_cls_loss = self.consistency_mse_loss(
-                    high2low_o_cls, low2high_o_cls) * num_dec_layers * self.o_cls_loss_weight
+                    high2low_o_cls, low2high_o_cls) * num_dec_layers * self.o_cls_loss_weight * self.consistency_loss_weight
                 s_bbox_loss = self.consistency_mse_loss(
-                    high2low_s_bbox, low2high_s_bbox) * num_dec_layers * self.s_bbox_loss_weight
+                    high2low_s_bbox, low2high_s_bbox) * num_dec_layers * self.s_bbox_loss_weight * self.consistency_loss_weight
                 o_bbox_loss = self.consistency_mse_loss(
-                    high2low_o_bbox, low2high_o_bbox) * num_dec_layers * self.o_bbox_loss_weight
+                    high2low_o_bbox, low2high_o_bbox) * num_dec_layers * self.o_bbox_loss_weight * self.consistency_loss_weight
                 s_mask_loss = self.consistency_mse_loss(
-                    high2low_s_mask, low2high_s_mask) * num_dec_layers * self.s_mask_loss_weight
+                    high2low_s_mask, low2high_s_mask) * num_dec_layers * self.s_mask_loss_weight * self.consistency_loss_weight
                 o_mask_loss = self.consistency_mse_loss(
-                    high2low_o_mask, low2high_o_mask) * num_dec_layers * self.o_mask_loss_weight
+                    high2low_o_mask, low2high_o_mask) * num_dec_layers * self.o_mask_loss_weight * self.consistency_loss_weight
                 r_loss = self.consistency_hinge_embedding_loss(F.pairwise_distance(
-                    high2low_r_cls, low2high_r_cls, p=2), r_label) * num_dec_layers * self.r_cls_loss_weight
+                    high2low_r_cls, low2high_r_cls, p=2), r_label) * num_dec_layers * self.r_cls_loss_weight * self.consistency_loss_weight
 
                 loss_dict['consistency.s_cls_loss'] = s_cls_loss
                 loss_dict['consistency.o_cls_loss'] = o_cls_loss
