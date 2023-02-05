@@ -49,6 +49,7 @@ class PSGMask2FormerMultiDecoderHead(PSGMaskFormerHead):
                  enforce_decoder_input_project=False,
                  positional_encoding=None,
                  transformer_decoder=None,
+                 use_separate_head=False,
                  decoder_cfg=dict(use_query_pred=True,
                                   ignore_masked_attention_layers=[]),
                  use_shared_query=False,
@@ -101,6 +102,7 @@ class PSGMask2FormerMultiDecoderHead(PSGMaskFormerHead):
         self.rel_bg_cls_weight = rel_bg_cls_weight
         self.use_mask = use_mask
         self.use_self_distillation = use_self_distillation
+        self.use_separate_head = use_separate_head
         self.decoder_cfg = decoder_cfg
         self.use_shared_query = use_shared_query
         self.test_forward_output_type = test_forward_output_type
@@ -175,6 +177,14 @@ class PSGMask2FormerMultiDecoderHead(PSGMaskFormerHead):
         # from low resolution to high resolution
         self.level_embed = nn.Embedding(self.num_transformer_feat_level,
                                         feat_channels)
+
+        if self.use_separate_head:
+            self.sub_head = MLP(
+                self.decoder_embed_dims, self.decoder_embed_dims, self.decoder_embed_dims, 3)
+            self.obj_head = MLP(
+                self.decoder_embed_dims, self.decoder_embed_dims, self.decoder_embed_dims, 3)
+            self.rel_head = MLP(
+                self.decoder_embed_dims, self.decoder_embed_dims, self.decoder_embed_dims, 3)
 
         # 3. Pred
         self.sub_cls_out_channels = self.num_classes if sub_loss_cls['use_sigmoid'] \
@@ -939,22 +949,31 @@ class PSGMask2FormerMultiDecoderHead(PSGMaskFormerHead):
         decoder_out = transformer_decoder.post_norm(decoder_out)
         decoder_out = decoder_out.transpose(0, 1)
 
-        sub_output_class = self.sub_cls_embed(decoder_out)
-        obj_output_class = self.obj_cls_embed(decoder_out)
-        rel_output_class = rel_cls_embed(decoder_out)
+        if self.use_separate_head:
+            sub_decoder_out = self.sub_head(decoder_out)
+            obj_decoder_out = self.obj_head(decoder_out)
+            rel_decoder_out = self.rel_head(decoder_out)
+        else:
+            sub_decoder_out = decoder_out
+            obj_decoder_out = decoder_out
+            rel_decoder_out = decoder_out
+
+        sub_output_class = self.sub_cls_embed(sub_decoder_out)
+        obj_output_class = self.obj_cls_embed(obj_decoder_out)
+        rel_output_class = rel_cls_embed(rel_decoder_out)
         all_cls_score = dict(sub=sub_output_class,
                              obj=obj_output_class,
                              rel=rel_output_class)
 
-        sub_output_coord = self.sub_box_embed(decoder_out).sigmoid()
-        obj_output_coord = self.obj_box_embed(decoder_out).sigmoid()
+        sub_output_coord = self.sub_box_embed(sub_decoder_out).sigmoid()
+        obj_output_coord = self.obj_box_embed(obj_decoder_out).sigmoid()
         all_bbox_pred = dict(sub=sub_output_coord,
                              obj=obj_output_coord)
 
-        sub_mask_embed = self.sub_mask_embed(decoder_out)
+        sub_mask_embed = self.sub_mask_embed(sub_decoder_out)
         sub_output_mask = torch.einsum(
             'bqc,bchw->bqhw', sub_mask_embed, mask_feature)
-        obj_mask_embed = self.obj_mask_embed(decoder_out)
+        obj_mask_embed = self.obj_mask_embed(obj_decoder_out)
         obj_output_mask = torch.einsum(
             'bqc,bchw->bqhw', obj_mask_embed, mask_feature)
         all_mask_pred = dict(sub=sub_output_mask,

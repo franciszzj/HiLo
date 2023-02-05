@@ -40,6 +40,7 @@ class PSGMaskFormerHead(AnchorFreeHead):
                  enforce_decoder_input_project=False,
                  positional_encoding=None,
                  transformer_decoder=None,
+                 use_separate_head=False,
                  sub_loss_cls=dict(type='CrossEntropyLoss',
                                    use_sigmoid=False,
                                    loss_weight=1.0,
@@ -77,6 +78,7 @@ class PSGMaskFormerHead(AnchorFreeHead):
         self.rel_bg_cls_weight = rel_bg_cls_weight
         self.use_mask = use_mask
         self.use_self_distillation = use_self_distillation
+        self.use_separate_head = use_separate_head
         self.train_cfg = train_cfg
         self.test_cfg = test_cfg
 
@@ -99,6 +101,14 @@ class PSGMaskFormerHead(AnchorFreeHead):
             self.decoder_input_proj = nn.Identity()
         self.decoder_pe = build_positional_encoding(positional_encoding)
         self.query_embed = nn.Embedding(self.num_queries, out_channels)
+
+        if self.use_separate_head:
+            self.sub_head = MLP(
+                self.decoder_embed_dims, self.decoder_embed_dims, self.decoder_embed_dims, 3)
+            self.obj_head = MLP(
+                self.decoder_embed_dims, self.decoder_embed_dims, self.decoder_embed_dims, 3)
+            self.rel_head = MLP(
+                self.decoder_embed_dims, self.decoder_embed_dims, self.decoder_embed_dims, 3)
 
         # 3. Pred
         self.sub_cls_out_channels = self.num_classes if sub_loss_cls['use_sigmoid'] \
@@ -961,23 +971,32 @@ class PSGMaskFormerHead(AnchorFreeHead):
         # shape (num_decoder, batch_size, num_queries, embed_dims)
         out_dec = out_dec.transpose(1, 2)
 
+        if self.use_separate_head:
+            sub_out_dec = self.sub_head(out_dec)
+            obj_out_dec = self.obj_head(out_dec)
+            rel_out_dec = self.rel_head(out_dec)
+        else:
+            sub_out_dec = out_dec
+            obj_out_dec = out_dec
+            rel_out_dec = out_dec
+
         # 2. Get outputs
-        sub_outputs_class = self.sub_cls_embed(out_dec)
-        obj_outputs_class = self.obj_cls_embed(out_dec)
-        rel_outputs_class = self.rel_cls_embed(out_dec)
+        sub_outputs_class = self.sub_cls_embed(sub_out_dec)
+        obj_outputs_class = self.obj_cls_embed(obj_out_dec)
+        rel_outputs_class = self.rel_cls_embed(rel_out_dec)
         all_cls_scores = dict(sub=sub_outputs_class,
                               obj=obj_outputs_class,
                               rel=rel_outputs_class)
 
-        sub_outputs_coord = self.sub_box_embed(out_dec).sigmoid()
-        obj_outputs_coord = self.obj_box_embed(out_dec).sigmoid()
+        sub_outputs_coord = self.sub_box_embed(sub_out_dec).sigmoid()
+        obj_outputs_coord = self.obj_box_embed(obj_out_dec).sigmoid()
         all_bbox_preds = dict(sub=sub_outputs_coord,
                               obj=obj_outputs_coord)
 
-        sub_mask_embed = self.sub_mask_embed(out_dec)
+        sub_mask_embed = self.sub_mask_embed(sub_out_dec)
         sub_outputs_mask = torch.einsum(
             'lbqc,bchw->lbqhw', sub_mask_embed, mask_features)
-        obj_mask_embed = self.obj_mask_embed(out_dec)
+        obj_mask_embed = self.obj_mask_embed(obj_out_dec)
         obj_outputs_mask = torch.einsum(
             'lbqc,bchw->lbqhw', obj_mask_embed, mask_features)
         all_mask_preds = dict(sub=sub_outputs_mask,

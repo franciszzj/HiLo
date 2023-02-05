@@ -55,6 +55,7 @@ class PSGMask2FormerHead(PSGMaskFormerHead):
                  enforce_decoder_input_project=False,
                  positional_encoding=None,
                  transformer_decoder=None,
+                 use_separate_head=False,
                  decoder_cfg=dict(use_query_pred=True,
                                   ignore_masked_attention_layers=[]),
                  use_inconsistency_loss=False,
@@ -102,6 +103,7 @@ class PSGMask2FormerHead(PSGMaskFormerHead):
         self.use_mlp_before_dot_product = use_mlp_before_dot_product
         self.use_decoder_for_relation_query = use_decoder_for_relation_query
         self.mask_self_attn_interact_of_diff_query_types = mask_self_attn_interact_of_diff_query_types
+        self.use_separate_head = use_separate_head
         self.decoder_cfg = decoder_cfg
         self.use_inconsistency_loss = use_inconsistency_loss
         self.inconsistency_loss_weight = inconsistency_loss_weight
@@ -148,6 +150,14 @@ class PSGMask2FormerHead(PSGMaskFormerHead):
                 self.num_relations + 1, out_channels)
             self.relation_query_feat = nn.Embedding(
                 self.num_relations + 1, feat_channels)
+
+        if self.use_separate_head:
+            self.sub_head = MLP(
+                self.decoder_embed_dims, self.decoder_embed_dims, self.decoder_embed_dims, 3)
+            self.obj_head = MLP(
+                self.decoder_embed_dims, self.decoder_embed_dims, self.decoder_embed_dims, 3)
+            self.rel_head = MLP(
+                self.decoder_embed_dims, self.decoder_embed_dims, self.decoder_embed_dims, 3)
 
         # 3. Pred
         self.sub_cls_out_channels = self.num_classes if sub_loss_cls['use_sigmoid'] \
@@ -342,33 +352,42 @@ class PSGMask2FormerHead(PSGMaskFormerHead):
                     relation_decoder_out)
             relation_decoder_out = relation_decoder_out.transpose(0, 1)
 
-        sub_output_class = self.sub_cls_embed(decoder_out)
-        obj_output_class = self.obj_cls_embed(decoder_out)
+        if self.use_separate_head:
+            sub_decoder_out = self.sub_head(decoder_out)
+            obj_decoder_out = self.obj_head(decoder_out)
+            rel_decoder_out = self.rel_head(decoder_out)
+        else:
+            sub_decoder_out = decoder_out
+            obj_decoder_out = decoder_out
+            rel_decoder_out = decoder_out
+
+        sub_output_class = self.sub_cls_embed(sub_decoder_out)
+        obj_output_class = self.obj_cls_embed(obj_decoder_out)
         if self.use_relation_query:
             if self.use_mlp_before_dot_product:
-                _decoder_out = self.object_query_mlp(decoder_out)
+                _decoder_out = self.object_query_mlp(rel_decoder_out)
                 _relation_decoder_out = self.relation_query_mlp(
                     relation_decoder_out)
                 rel_output_class = torch.einsum(
                     'bqc,brc->bqr', _decoder_out, _relation_decoder_out)
             else:
                 rel_output_class = torch.einsum(
-                    'bqc,brc->bqr', decoder_out, relation_decoder_out)
+                    'bqc,brc->bqr', rel_decoder_out, relation_decoder_out)
         else:
-            rel_output_class = self.rel_cls_embed(decoder_out)
+            rel_output_class = self.rel_cls_embed(rel_decoder_out)
         all_cls_score = dict(sub=sub_output_class,
                              obj=obj_output_class,
                              rel=rel_output_class)
 
-        sub_output_coord = self.sub_box_embed(decoder_out).sigmoid()
-        obj_output_coord = self.obj_box_embed(decoder_out).sigmoid()
+        sub_output_coord = self.sub_box_embed(sub_decoder_out).sigmoid()
+        obj_output_coord = self.obj_box_embed(obj_decoder_out).sigmoid()
         all_bbox_pred = dict(sub=sub_output_coord,
                              obj=obj_output_coord)
 
-        sub_mask_embed = self.sub_mask_embed(decoder_out)
+        sub_mask_embed = self.sub_mask_embed(sub_decoder_out)
         sub_output_mask = torch.einsum(
             'bqc,bchw->bqhw', sub_mask_embed, mask_feature)
-        obj_mask_embed = self.obj_mask_embed(decoder_out)
+        obj_mask_embed = self.obj_mask_embed(obj_decoder_out)
         obj_output_mask = torch.einsum(
             'bqc,bchw->bqhw', obj_mask_embed, mask_feature)
         all_mask_pred = dict(sub=sub_output_mask,
