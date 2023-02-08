@@ -72,8 +72,13 @@ class PanopticSceneGraphDataset(CocoPanopticDataset):
 
         # Relation to frequency dict
         self.rel2freq = dict()
-        for i, _ in enumerate(dataset['predicate_classes']):
+        for i in range(len(dataset['predicate_classes'])):
             self.rel2freq[i+1] = 0
+        self.so_rel2freq = dict()
+        for k in range(len(dataset['thing_classes']) + len(dataset['stuff_classes'])):
+            for j in range(len(dataset['thing_classes']) + len(dataset['stuff_classes'])):
+                for i in range(len(dataset['predicate_classes'])):
+                    self.so_rel2freq[(k, j, i+1)] = 0
 
         for d in dataset['data']:
             # NOTE: 0-index for object class labels
@@ -87,6 +92,8 @@ class PanopticSceneGraphDataset(CocoPanopticDataset):
             for r in d['relations']:
                 r[2] += 1
                 self.rel2freq[r[2]] += 1
+                self.so_rel2freq[(d['annotations'][r[0]]['category_id'],
+                                  d['annotations'][r[1]]['category_id'], r[2])] += 1
 
         # NOTE: Filter out images with zero relations
         dataset['data'] = [
@@ -106,6 +113,10 @@ class PanopticSceneGraphDataset(CocoPanopticDataset):
                 d for d in dataset['data']
                 if d['image_id'] in dataset['test_image_ids']
             ]
+            # If you need to traverse all data
+            # self.data = [
+            #     d for d in dataset['data']
+            # ]
             # self.data = self.data[:1000] # for quick debug
         # Init image infos
         self.data_infos = []
