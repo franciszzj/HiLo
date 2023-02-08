@@ -1232,18 +1232,19 @@ class PSGMaskFormerHead(AnchorFreeHead):
             (h, w), self.num_classes, dtype=torch.int32, device=complete_masks_score.device)
 
         if complete_labels.numel() == 0:
-            panoptic_seg = torch.ones(mask_size).cpu().to(torch.long)
+            new_labels = torch.tensor([0])
+            new_bboxes = torch.zeros((1, 5))
             new_masks_binary = panoptic_seg.unsqueeze(0).cpu().to(torch.long)
             new_rel_pairs = torch.arange(len(complete_labels), dtype=torch.int).to(
                 complete_masks_binary.device).reshape(2, -1).T
-            new_triplets = torch.tensor([0, 0, 0]).view(-1, 3)
-            new_labels = torch.tensor([0])
             new_r_scores = complete_r_scores
             new_r_labels = complete_r_labels
             new_r_dists = complete_r_dists
-            new_bboxes = torch.zeros((1, 5))
-            print('\tno object...')
+            new_triplets = torch.tensor([0, 0, 0]).view(-1, 3)
+            panoptic_seg = torch.ones(mask_size).cpu().to(torch.long)
         else:
+            # 1. generation panoptic seg
+            # 2. assign each subject/object to panoptic seg
             keep_num, old2new_map, new2old_map = self._dedup_objects_based_on_iou(
                 complete_labels, complete_masks_binary)
 
