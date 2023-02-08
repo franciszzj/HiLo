@@ -15,6 +15,8 @@ CONFIG=$1
 GPUS=8
 PORT=29500
 
+export PYTORCH_CUDA_ALLOC_CONF=max_split_size_mb:128
+
 PYTHONPATH="$(dirname $0)/..":$PYTHONPATH \
 EVAL_PAN_RELS=False \
 WANDB_MODE="offline" \
