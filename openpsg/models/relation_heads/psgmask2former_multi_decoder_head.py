@@ -667,7 +667,7 @@ class PSGMask2FormerMultiDecoderHead(PSGMaskFormerHead):
                             low2high_r_cls.append(this_low2high_r_cls)
 
                             this_high2low_rel = high2low_gt_rels_list[0][label_i][2]
-                            this_low2high_rel = high2low_gt_rels_list[0][label_i][2]
+                            this_low2high_rel = low2high_gt_rels_list[0][label_i][2]
                             if this_high2low_rel == this_low2high_rel:
                                 r_label.append(1)
                             else:
@@ -725,7 +725,7 @@ class PSGMask2FormerMultiDecoderHead(PSGMaskFormerHead):
                         low2high_r_cls.append(this_low2high_r_cls)
 
                         this_high2low_rel = high2low_gt_rels_list[0][label_i][2]
-                        this_low2high_rel = high2low_gt_rels_list[0][label_i][2]
+                        this_low2high_rel = low2high_gt_rels_list[0][label_i][2]
                         if this_high2low_rel == this_low2high_rel:
                             r_label.extend([1 for _ in range(num_dec_layers)])
                         else:
