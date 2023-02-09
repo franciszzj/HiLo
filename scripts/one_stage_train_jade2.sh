@@ -27,4 +27,5 @@ python -m torch.distributed.launch \
   $CONFIG \
   --auto-resume \
   --no-validate \
+  --seed 666 \
   --launcher pytorch
