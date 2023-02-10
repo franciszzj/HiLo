@@ -58,6 +58,7 @@ class PSGMask2FormerMultiDecoderHead(PSGMaskFormerHead):
                  consistency_loss_type='v0',
                  consistency_loss_only_on_last_layer=False,
                  consistency_loss_weight=1.0,
+                 consistency_loss_relation_type='hinge',
                  use_inconsistency_loss=False,
                  inconsistency_loss_weight=1.0,
                  use_decoder_parameter_mapping=False,
@@ -110,6 +111,7 @@ class PSGMask2FormerMultiDecoderHead(PSGMaskFormerHead):
         self.consistency_loss_type = consistency_loss_type
         self.consistency_loss_only_on_last_layer = consistency_loss_only_on_last_layer
         self.consistency_loss_weight = consistency_loss_weight
+        self.consistency_loss_relation_type = consistency_loss_relation_type
         self.use_inconsistency_loss = use_inconsistency_loss
         self.inconsistency_loss_weight = inconsistency_loss_weight
         self.use_decoder_parameter_mapping = use_decoder_parameter_mapping
@@ -608,6 +610,9 @@ class PSGMask2FormerMultiDecoderHead(PSGMaskFormerHead):
                 high2low_s_mask = []
                 high2low_o_mask = []
                 high2low_r_cls = []
+                high2low_r_v_cls = []
+                high2low_r_x_cls = []
+                high2low_r_x_label = []
 
                 low2high_s_cls = []
                 low2high_o_cls = []
@@ -616,6 +621,9 @@ class PSGMask2FormerMultiDecoderHead(PSGMaskFormerHead):
                 low2high_s_mask = []
                 low2high_o_mask = []
                 low2high_r_cls = []
+                low2high_r_v_cls = []
+                low2high_r_x_cls = []
+                low2high_r_x_label = []
 
                 r_label = []
 
@@ -728,8 +736,16 @@ class PSGMask2FormerMultiDecoderHead(PSGMaskFormerHead):
                         this_low2high_rel = low2high_gt_rels_list[0][label_i][2]
                         if this_high2low_rel == this_low2high_rel:
                             r_label.extend([1 for _ in range(num_dec_layers)])
+                            high2low_r_v_cls.append(this_high2low_r_cls)
+                            low2high_r_v_cls.append(this_low2high_r_cls)
                         else:
                             r_label.extend([-1 for _ in range(num_dec_layers)])
+                            high2low_r_x_cls.append(this_high2low_r_cls)
+                            low2high_r_x_cls.append(this_low2high_r_cls)
+                            high2low_r_x_label.extend(
+                                [this_high2low_rel for _ in range(num_dec_layers)])
+                            low2high_r_x_label.extend(
+                                [this_low2high_rel for _ in range(num_dec_layers)])
 
                 high2low_s_cls = torch.cat(high2low_s_cls, dim=0)
                 high2low_o_cls = torch.cat(high2low_o_cls, dim=0)
@@ -762,8 +778,6 @@ class PSGMask2FormerMultiDecoderHead(PSGMaskFormerHead):
                     high2low_s_mask, low2high_s_mask) * num_dec_layers * self.s_mask_loss_weight * self.consistency_loss_weight
                 o_mask_loss = self.consistency_mse_loss(
                     high2low_o_mask, low2high_o_mask) * num_dec_layers * self.o_mask_loss_weight * self.consistency_loss_weight
-                r_loss = self.consistency_hinge_embedding_loss(F.pairwise_distance(
-                    high2low_r_cls, low2high_r_cls, p=2), r_label) * num_dec_layers * self.r_cls_loss_weight * self.consistency_loss_weight
 
                 loss_dict['consistency.s_cls_loss'] = s_cls_loss
                 loss_dict['consistency.o_cls_loss'] = o_cls_loss
@@ -771,7 +785,37 @@ class PSGMask2FormerMultiDecoderHead(PSGMaskFormerHead):
                 loss_dict['consistency.o_bbox_loss'] = o_bbox_loss
                 loss_dict['consistency.s_mask_loss'] = s_mask_loss
                 loss_dict['consistency.o_mask_loss'] = o_mask_loss
-                loss_dict['consistency.r_loss'] = r_loss
+
+                if self.consistency_loss_relation_type == 'hinge':
+                    r_loss = self.consistency_hinge_embedding_loss(F.pairwise_distance(
+                        high2low_r_cls, low2high_r_cls, p=2), r_label) * num_dec_layers * self.r_cls_loss_weight * self.consistency_loss_weight
+                    loss_dict['consistency.r_loss'] = r_loss
+                elif self.consistency_loss_relation_type == 'index_exchange':
+                    if len(high2low_r_v_cls) > 0 and len(low2high_r_v_cls) > 0:
+                        high2low_r_v_cls = torch.cat(high2low_r_v_cls, dim=0)
+                        low2high_r_v_cls = torch.cat(low2high_r_v_cls, dim=0)
+                        r_v_loss = self.consistency_mse_loss(
+                            high2low_r_v_cls, low2high_r_v_cls) * num_dec_layers * self.r_cls_loss_weight * self.consistency_loss_weight
+                        loss_dict['consistency.r_v_loss'] = r_v_loss
+                    if len(high2low_r_x_cls) > 0 and len(low2high_r_x_cls) > 0:
+                        high2low_r_x_cls = torch.cat(
+                            high2low_r_x_cls, dim=0).detach()
+                        low2high_r_x_cls = torch.cat(
+                            low2high_r_x_cls, dim=0).detach()
+                        high2low_r_x_label = torch.stack(
+                            high2low_r_x_label, dim=0).to(torch.long)
+                        low2high_r_x_label = torch.stack(
+                            low2high_r_x_label, dim=0).to(torch.long)
+                        high2low_r_x_cls_ie = high2low_r_x_cls.detach()
+                        low2high_r_x_cls_ie = low2high_r_x_cls.detach()
+                        for ie_idx in range(high2low_r_x_cls.shape[0]):
+                            high2low_r_x_cls_ie[ie_idx, high2low_r_x_label[ie_idx]] = high2low_r_x_cls[ie_idx, low2high_r_x_label[ie_idx]]  # noqa
+                            high2low_r_x_cls_ie[ie_idx, low2high_r_x_label[ie_idx]] = high2low_r_x_cls[ie_idx, high2low_r_x_label[ie_idx]]  # noqa
+                            low2high_r_x_cls_ie[ie_idx, high2low_r_x_label[ie_idx]] = low2high_r_x_cls[ie_idx, low2high_r_x_label[ie_idx]]  # noqa
+                            low2high_r_x_cls_ie[ie_idx, low2high_r_x_label[ie_idx]] = low2high_r_x_cls[ie_idx, high2low_r_x_label[ie_idx]]  # noqa
+                        r_x_loss = (self.consistency_mse_loss(high2low_r_x_cls, low2high_r_x_cls_ie) + self.consistency_mse_loss(
+                            low2high_r_x_cls, high2low_r_x_cls_ie)) * num_dec_layers * self.r_cls_loss_weight * self.consistency_loss_weight
+                        loss_dict['consistency.r_x_loss'] = r_x_loss
 
         return loss_dict
 
