@@ -787,10 +787,8 @@ class PSGMask2FormerMultiDecoderHead(PSGMaskFormerHead):
                 elif self.consistency_loss_relation_type == 'index_shift':
                     assert False, 'The relation index shift is unreasonable, no experiment.'
                 elif self.consistency_loss_relation_type == 'index_exchange':
-                    high2low_r_cls = torch.cat(
-                        high2low_r_cls, dim=0).detach()
-                    low2high_r_cls = torch.cat(
-                        low2high_r_cls, dim=0).detach()
+                    high2low_r_cls = high2low_r_cls.detach()
+                    low2high_r_cls = low2high_r_cls.detach()
                     high2low_r_label = torch.stack(
                         high2low_r_label, dim=0).to(torch.long)
                     low2high_r_label = torch.stack(
