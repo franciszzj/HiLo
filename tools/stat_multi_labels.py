@@ -4,6 +4,7 @@ import json
 import copy
 
 
+# frequency for all dataset, includes train and test
 frequency_dict = {
     'over': 39950,
     'in front of': 11433,
@@ -74,6 +75,7 @@ def stat_multi_labels(in_file, out_file=None):
     stuff_classes = psg['stuff_classes']
     predicate_classes = psg['predicate_classes']
     object_classes = thing_classes + stuff_classes
+    test_image_ids = psg['test_image_ids']
 
     all_idx = 0
     repeat_idx = 0
@@ -85,49 +87,54 @@ def stat_multi_labels(in_file, out_file=None):
     relation_list = []
     new_psg = copy.deepcopy(psg)
     for idx, d in enumerate(data):
+        find_name = 'not found'
+        if find_name in d['file_name']:
+            import pdb
+            pdb.set_trace()
         relations = d['relations']
         annotations = d['annotations']
         new_relations = copy.deepcopy(relations)
-        for i, rel1 in enumerate(relations):
-            all_idx += 1
-            relation_list.append(rel1[2])
-            relation_num[rel1[2]] += 1
-            for j, rel2 in enumerate(relations):
-                if i >= j:
-                    continue
-                if set(rel1) == set(rel2):
-                    repeat_idx += 1
-                    continue
-                if (rel1[0] == rel2[0]) and (rel1[1] == rel2[1]):
-                    multi_labels_idx += 1
-                    sub_id = rel1[0]
-                    obj_id = rel1[1]
-                    sub = annotations[sub_id]
-                    obj = annotations[obj_id]
-                    subject = object_classes[sub['category_id']]
-                    object = object_classes[obj['category_id']]
-                    relation1 = predicate_classes[rel1[2]]
-                    relation2 = predicate_classes[rel2[2]]
-                    if rel1[2] < 6:
-                        spatial_rel_idx += 1
-                    if rel2[2] < 6:
-                        spatial_rel_idx += 1
-                    if (rel1[2] < 6) and (rel2[2] < 6):
-                        double_spatial_rel_idx += 1
-                    print('{} -> {} and {} have multi relations: {}, {}'.format(
-                        d['file_name'], subject, object, relation1, relation2))
+        if d['image_id'] not in test_image_ids:
+            for i, rel1 in enumerate(relations):
+                all_idx += 1
+                relation_list.append(rel1[2])
+                relation_num[rel1[2]] += 1
+                for j, rel2 in enumerate(relations):
+                    if i >= j:
+                        continue
+                    if set(rel1) == set(rel2):
+                        repeat_idx += 1
+                        continue
+                    if (rel1[0] == rel2[0]) and (rel1[1] == rel2[1]):
+                        multi_labels_idx += 1
+                        sub_id = rel1[0]
+                        obj_id = rel1[1]
+                        sub = annotations[sub_id]
+                        obj = annotations[obj_id]
+                        subject = object_classes[sub['category_id']]
+                        object = object_classes[obj['category_id']]
+                        relation1 = predicate_classes[rel1[2]]
+                        relation2 = predicate_classes[rel2[2]]
+                        if rel1[2] < 6:
+                            spatial_rel_idx += 1
+                        if rel2[2] < 6:
+                            spatial_rel_idx += 1
+                        if (rel1[2] < 6) and (rel2[2] < 6):
+                            double_spatial_rel_idx += 1
+                        print('{} -> {}_{} and {}_{} have multi relations: {}, {}'.format(
+                            d['file_name'], sub_id, subject, obj_id, object, relation1, relation2))
 
-                    change_idx += 1
-                    if frequency_dict[relation1] > frequency_dict[relation2]:
-                        new_relations[i] = rel2
-                        new_relations[j] = rel2
-                    else:
-                        new_relations[i] = rel1
-                        new_relations[j] = rel1
+                        change_idx += 1
+                        if frequency_dict[relation1] > frequency_dict[relation2]:
+                            new_relations[i] = rel2
+                            new_relations[j] = rel2
+                        else:
+                            new_relations[i] = rel1
+                            new_relations[j] = rel1
 
-                if all_idx % 100 == 0:
-                    print('{} / {} / {} / {} / {} / {}'.format(multi_labels_idx,
-                          repeat_idx, all_idx, spatial_rel_idx, double_spatial_rel_idx, change_idx))
+                    if all_idx % 100 == 0:
+                        print('{} / {} / {} / {} / {} / {}'.format(
+                            multi_labels_idx, repeat_idx, all_idx, spatial_rel_idx, double_spatial_rel_idx, change_idx))
         d['relations'] = new_relations
         new_psg['data'][idx] = copy.deepcopy(d)
     print('{} / {} / {} / {} / {} / {}'.format(multi_labels_idx, repeat_idx,
