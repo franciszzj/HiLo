@@ -48,7 +48,6 @@ def process(config_file, checkpoint_file, output_file=None):
     for data_i, data in enumerate(data_loader):
         prog_bar.update()
 
-        t0 = time.time()
         img_metas = data['img_metas'][0].data[0][0]
         key = img_metas['ori_filename']
         this_psg_data = psg_data_dict[key]
@@ -56,7 +55,6 @@ def process(config_file, checkpoint_file, output_file=None):
             psg_data_list.append(this_psg_data)
             continue
 
-        t1 = time.time()
         with torch.no_grad():
             device = data['gt_labels'][0].data[0][0].device
             gt_masks = data['gt_masks'][0].data[0][0].to_tensor(
@@ -74,7 +72,6 @@ def process(config_file, checkpoint_file, output_file=None):
                 result[j]['ins_results'] = (bbox_results,
                                             encode_mask_results(mask_results))
         
-        t2 = time.time()
         # get gt
         ori_shape = img_metas['ori_shape']
         gt_labels = data['gt_labels'][0].data[0][0]
@@ -84,7 +81,6 @@ def process(config_file, checkpoint_file, output_file=None):
                                     size=ori_shape[:2]).squeeze(1)
         gt_rels = data['gt_rels'][0].data[0][0]
         
-        t3 = time.time()
         # get gt_no_rels
         sub_obj_pair_list = [[s, o] for s, o, r in gt_rels]
         gt_no_rels = []
@@ -96,7 +92,6 @@ def process(config_file, checkpoint_file, output_file=None):
                     gt_no_rels.append([s, o, 0])
         gt_no_rels = np.array(gt_no_rels)
 
-        t4 = time.time()
         # get pred
         pd_labels = result[0].labels - 1
         pd_bboxes = result[0].refine_bboxes
@@ -106,7 +101,6 @@ def process(config_file, checkpoint_file, output_file=None):
         pd_rel_dists = result[0].rel_dists
         pd_rels = result[0].rels
 
-        t5 = time.time()
         # get mask iou
         gt_masks = gt_masks.to(device='cuda:0').to(torch.float).flatten(1)
         pd_masks = torch.asarray(pd_masks, dtype=gt_masks.dtype, device=gt_masks.device).flatten(1)
@@ -116,7 +110,6 @@ def process(config_file, checkpoint_file, output_file=None):
             ious_list.append(ious)
         ious = torch.cat(ious_list, dim=0)
 
-        t6 = time.time()
         # print('\n')
         # print(this_psg_data['relations'])
         ##################
@@ -160,7 +153,6 @@ def process(config_file, checkpoint_file, output_file=None):
         # print(this_psg_data['relations'])
         # print(internal_trans_count)
 
-        t7 = time.time()
         ##################
         # external trans #
         ##################
@@ -185,7 +177,7 @@ def process(config_file, checkpoint_file, output_file=None):
                     pd_r_dists_list.append(pd_r_dists)
             if len(pd_r_dists_list) > 0:
                 pd_r_dists = np.stack(pd_r_dists_list, axis=0)
-                # 此处应该加权平均
+                # TODO: use weighted average
                 pd_r_dists = pd_r_dists.mean(axis=0)
                 if gt_r_label != np.argmax(pd_r_dists):
                     r_sort = np.argsort(pd_r_dists)[::-1]
@@ -200,12 +192,7 @@ def process(config_file, checkpoint_file, output_file=None):
         # print(this_psg_data['relations'])
         # print(external_trans_count)
 
-        t8 = time.time()
         psg_data_list.append(this_psg_data)
-        t9 = time.time()
-        # print('#### meta: {}, forward: {}, gt: {}, no_rel: {}, pred: {}, mask iou: {}, itrans: {}, etrans: {}, pack: {}'.format(
-        #     t1 - t0, t2 - t1, t3 - t2, t4 - t3, t5 - t4, t6 - t5, t7 - t6, t8 - t7, t9 - t8
-        # ))
 
     print('gt_rels_count: ', gt_rels_count)
     print('internal_trans_count: ', internal_trans_count)
@@ -216,6 +203,7 @@ def process(config_file, checkpoint_file, output_file=None):
         json.dump(psg_data, fo)
 
 if __name__ == '__main__':
+    # Modify self.data in test mode in openpsg/datasets/psg.py to all data, not just test.
     config_file = sys.argv[1]
     checkpoint_file = sys.argv[2]
     output_file = sys.argv[3]
