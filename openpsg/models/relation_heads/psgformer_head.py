@@ -1121,7 +1121,7 @@ class PSGFormerHead(AnchorFreeHead):
         else:
             return det_bboxes, labels, rel_pairs, r_scores, r_labels, r_dists
 
-    def simple_test_bboxes(self, feats, img_metas, rescale=False, **kwargs):
+    def simple_test(self, feats, img_metas, rescale=False, **kwargs):
 
         # forward of this head requires img_metas
         outs = self.forward(feats, img_metas, **kwargs)
