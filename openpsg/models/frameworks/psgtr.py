@@ -12,8 +12,10 @@ from mmdet.models import DETECTORS, SingleStageDetector
 
 from openpsg.models.relation_heads.approaches import Result
 from openpsg.utils.utils import adjust_text_color, draw_text, get_colormap
+from openpsg.models.frameworks.psgmaskformer import triplet2Result
 
-
+# old triplet2Result
+'''
 def triplet2Result(triplets, use_mask, eval_pan_rels=os.getenv('EVAL_PAN_RELS', 'false').lower() == 'true'):
     if isinstance(triplets, Result):
         return triplets
@@ -76,7 +78,7 @@ def triplet2Result(triplets, use_mask, eval_pan_rels=os.getenv('EVAL_PAN_RELS', 
             rel_labels=r_labels,
             pan_results=None,
         )
-
+'''
 
 @DETECTORS.register_module()
 class PSGTr(SingleStageDetector):
