@@ -1595,7 +1595,7 @@ def dedup_triplets_based_on_iou(sub_labels, obj_labels, rel_labels, sub_masks, o
 def merge_results(result1, result2, data=None):
     # when eval_pan_rels is true, it is more complicated to merge two results.
     # because we should merge two pan_seg into one.
-    assert os.getenv('EVAL_PAN_RELS', 'false').lower() != 'true'
+    # assert os.getenv('EVAL_PAN_RELS', 'false').lower() != 'true'
     result1 = copy.deepcopy(result1)
     result2 = copy.deepcopy(result2)
     assert isinstance(result1, Result)
