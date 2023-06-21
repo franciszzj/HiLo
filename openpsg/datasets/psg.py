@@ -10,10 +10,52 @@ from detectron2.data.detection_utils import read_image
 from mmdet.datasets import DATASETS, CocoPanopticDataset
 from mmdet.datasets.coco_panoptic import COCOPanoptic
 from mmdet.datasets.pipelines import Compose
-from panopticapi.utils import rgb2id
+from panopticapi.utils import rgb2id, id2rgb
 
 from openpsg.evaluation import sgg_evaluation
 from openpsg.models.relation_heads.approaches import Result
+
+# Add for visualization
+import cv2
+from skimage.segmentation import find_boundaries
+from polylabel import polylabel
+file_client = mmcv.FileClient(**dict(backend='disk'))
+PALETTE = [(220, 20, 60), (119, 11, 32), (0, 0, 142), (0, 0, 230),
+           (106, 0, 228), (0, 60, 100), (0, 80, 100), (0, 0, 70),
+           (0, 0, 192), (250, 170, 30), (100, 170, 30), (220, 220, 0),
+           (175, 116, 175), (250, 0, 30), (165, 42, 42), (255, 77, 255),
+           (0, 226, 252), (182, 182, 255), (0, 82, 0), (120, 166, 157),
+           (110, 76, 0), (174, 57, 255), (199, 100, 0), (72, 0, 118),
+           (255, 179, 240), (0, 125, 92), (209, 0, 151), (188, 208, 182),
+           (0, 220, 176), (255, 99, 164), (92, 0, 73), (133, 129, 255),
+           (78, 180, 255), (0, 228, 0), (174, 255, 243), (45, 89, 255),
+           (134, 134, 103), (145, 148, 174), (255, 208, 186),
+           (197, 226, 255), (171, 134, 1), (109, 63, 54), (207, 138, 255),
+           (151, 0, 95), (9, 80, 61), (84, 105, 51), (74, 65, 105),
+           (166, 196, 102), (208, 195, 210), (255, 109, 65), (0, 143, 149),
+           (179, 0, 194), (209, 99, 106), (5, 121, 0), (227, 255, 205),
+           (147, 186, 208), (153, 69, 1), (3, 95, 161), (163, 255, 0),
+           (119, 0, 170), (0, 182, 199), (0, 165, 120), (183, 130, 88),
+           (95, 32, 0), (130, 114, 135), (110, 129, 133), (166, 74, 118),
+           (219, 142, 185), (79, 210, 114), (178, 90, 62), (65, 70, 15),
+           (127, 167, 115), (59, 105, 106), (142, 108, 45), (196, 172, 0),
+           (95, 54, 80), (128, 76, 255), (201, 57, 1), (246, 0, 122),
+           (191, 162, 208), (255, 255, 128), (147, 211, 203),
+           (150, 100, 100), (168, 171, 172), (146, 112, 198),
+           (210, 170, 100), (92, 136, 89), (218, 88, 184), (241, 129, 0),
+           (217, 17, 255), (124, 74, 181), (70, 70, 70), (255, 228, 255),
+           (154, 208, 0), (193, 0, 92), (76, 91, 113), (255, 180, 195),
+           (106, 154, 176),
+           (230, 150, 140), (60, 143, 255), (128, 64, 128), (92, 82, 55),
+           (254, 212, 124), (73, 77, 174), (255, 160, 98), (255, 255, 255),
+           (104, 84, 109), (169, 164, 131), (225, 199, 255), (137, 54, 74),
+           (135, 158, 223), (7, 246, 231), (107, 255, 200), (58, 41, 149),
+           (183, 121, 142), (255, 73, 97), (107, 142, 35), (190, 153, 153),
+           (146, 139, 141),
+           (70, 130, 180), (134, 199, 156), (209, 226, 140), (96, 36, 108),
+           (96, 96, 96), (64, 170, 64), (152, 251, 152), (208, 229, 228),
+           (206, 186, 171), (152, 161, 64), (116, 112, 0), (0, 114, 143),
+           (102, 102, 156), (250, 141, 255)]
 
 
 @DATASETS.register_module()
@@ -118,6 +160,30 @@ class PanopticSceneGraphDataset(CocoPanopticDataset):
             #     d for d in dataset['data']
             # ]
             # self.data = self.data[:1000] # for quick debug
+
+            '''
+            # Only test data with relational semantic overlap problems.
+            new_data = []
+            only_test_dup = True
+            for d in self.data:
+                has_dup = False
+                r_list = []
+                if only_test_dup:
+                    keep_list = []
+                for r in d['relations']:
+                    if (r[0], r[1]) not in r_list:
+                        r_list.append((r[0], r[1]))
+                    else:
+                        if only_test_dup:
+                            keep_list.append(r)
+                        has_dup = True
+                if only_test_dup:
+                    d['relations'] = keep_list
+                if has_dup:
+                    new_data.append(d)
+            self.data = new_data
+            # '''
+
         # Init image infos
         self.data_infos = []
         for d in self.data:
@@ -337,6 +403,7 @@ class PanopticSceneGraphDataset(CocoPanopticDataset):
             bboxes_ignore=gt_bboxes_ignore,
             masks=gt_mask_infos,
             seg_map=d['pan_seg_file_name'],
+            segment_infos=d['segments_info'],
         )
         if self.split == 'train':
             ann['random_gt_rels'] = random_gt_rels
@@ -456,6 +523,11 @@ class PanopticSceneGraphDataset(CocoPanopticDataset):
                             rel_labels=ann['rels'][:, -1],
                             masks=gt_masks,
                         ))
+                    '''
+                    # for visualization
+                    self.viz_single(
+                        self.data_infos[i], gt_results[i], results[i])
+                    # '''
                     prog_bar.update()
 
                 print('\n')
@@ -511,3 +583,101 @@ class PanopticSceneGraphDataset(CocoPanopticDataset):
             progbar.update()
 
         return freq_matrix
+
+    def viz_single(self, data_info, groundtruth, prediction):
+        # 1. parse data
+        image_file = data_info['filename']
+        image = mmcv.imread(osp.join(self.img_prefix, image_file))
+        h, w, c = image.shape
+
+        gt_bboxes = groundtruth.bboxes
+        gt_labels = groundtruth.labels
+        gt_masks = groundtruth.masks
+        gt_rels = groundtruth.rels
+        gt_pan_bytes = file_client.get(
+            osp.join(self.img_prefix, data_info['segm_file']))
+        gt_pan_seg = mmcv.imfrombytes(gt_pan_bytes,
+                                      flag='color',
+                                      channel_order='rgb').squeeze()
+        gt_pan_id = rgb2id(gt_pan_seg)
+        gt_pan_boundaries = find_boundaries(gt_pan_id)
+
+        pred_bboxes = prediction.refine_bboxes
+        pred_labels = prediction.labels
+        pred_masks = prediction.masks
+        pred_rels = prediction.rels
+        pred_rel_dists = prediction.rel_dists
+        pred_pan_id = prediction.pan_results
+        pred_pan_boundaries = find_boundaries(pred_pan_id)
+        pred_pan_seg = id2rgb(pred_pan_id)
+
+        # 2. visualize gt
+        gt_vis_image = np.zeros((2*h, w, c), dtype=image.dtype) + 255
+        gt_pan_seg = copy.deepcopy(image)
+        for idx, (label, mask) in enumerate(zip(gt_labels, gt_masks)):
+            index = np.where(mask)
+            gt_pan_seg[index] = PALETTE[label - 1]
+        gt_pan_seg[gt_pan_boundaries] = [0, 0, 0]
+        gt_vis_image[:h, :, :] = image * 0.5 + gt_pan_seg * 0.5
+        for idx, (label, mask) in enumerate(zip(gt_labels, gt_masks)):
+            if mask.sum() == 0:
+                continue
+            # this_boundaries = find_boundaries(mask)
+            # poly_index = np.where(this_boundaries)
+            # poly_index = [[[x, y] for x, y in zip(poly_index[0], poly_index[1])]]
+            # center = polylabel(poly_index)
+            index = np.where(mask)
+            center = [np.mean(index[1]), np.mean(index[0])]
+            cv2.putText(gt_vis_image, '{}_{}'.format(idx, self.CLASSES[label - 1]), (int(
+                center[0]), int(center[1])), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
+        for idx in range(gt_rels.shape[0]):
+            rels = gt_rels[idx]
+            sub_idx, obj_idx, rel_idx = rels
+            sub_cls = gt_labels[sub_idx]
+            obj_cls = gt_labels[obj_idx]
+            sub_name = self.CLASSES[sub_cls - 1]
+            obj_name = self.CLASSES[obj_cls - 1]
+            rel_name = self.PREDICATES[rel_idx - 1]
+            text = '{}_{} - {} - {}_{}'.format(sub_idx,
+                                               sub_name, rel_name, obj_idx, obj_name)
+            cv2.putText(gt_vis_image, text, (0, h+h//21*(idx+1)),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 0), 1)
+
+        # 3. visualize pred
+        pred_vis_image = np.zeros((2*h, w, c), dtype=image.dtype) + 255
+        pred_pan_seg = copy.deepcopy(image)
+        for idx, (label, mask) in enumerate(zip(pred_labels, pred_masks)):
+            index = np.where(mask)
+            pred_pan_seg[index] = PALETTE[label - 1]
+        pred_pan_seg[pred_pan_boundaries] = [0, 0, 0]
+        pred_vis_image[:h, :, :] = image * 0.5 + pred_pan_seg * 0.5
+        for idx, (label, mask) in enumerate(zip(pred_labels, pred_masks)):
+            if mask.sum() == 0:
+                continue
+            # this_boundaries = find_boundaries(mask)
+            # poly_index = np.where(this_boundaries)
+            # poly_index = [[[x, y] for x, y in zip(poly_index[0], poly_index[1])]]
+            # center = polylabel(poly_index)
+            index = np.where(mask)
+            center = [np.mean(index[1]), np.mean(index[0])]
+            cv2.putText(pred_vis_image, '{}_{}'.format(idx, self.CLASSES[label - 1]), (int(
+                center[0]), int(center[1])), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
+        for idx in range(pred_rels.shape[0]):
+            if idx > 20:
+                break
+            rels = pred_rels[idx]
+            sub_idx, obj_idx, rel_idx = rels
+            sub_cls = pred_labels[sub_idx]
+            obj_cls = pred_labels[obj_idx]
+            sub_name = self.CLASSES[sub_cls - 1]
+            obj_name = self.CLASSES[obj_cls - 1]
+            rel_name = self.PREDICATES[rel_idx - 1]
+            text = '{}_{} - {} - {}_{}'.format(
+                sub_idx, sub_name, rel_name, obj_idx, obj_name)
+            cv2.putText(pred_vis_image, text, (0, h+h//21*(idx+1)),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 0), 1)
+
+        # 4. save
+        vis_image = np.concatenate((gt_vis_image, pred_vis_image), axis=1)
+        cv2.imwrite(
+            './viz/{}'.format(data_info['filename'].split('/')[-1]), vis_image)
