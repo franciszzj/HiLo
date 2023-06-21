@@ -787,8 +787,8 @@ class PSGMask2FormerMultiDecoderHead(PSGMaskFormerHead):
                 elif self.consistency_loss_relation_type == 'index_shift':
                     assert False, 'The relation index shift is unreasonable, no experiment.'
                 elif self.consistency_loss_relation_type == 'index_exchange':
-                    high2low_r_cls = high2low_r_cls.detach()
-                    low2high_r_cls = low2high_r_cls.detach()
+                    high2low_r_cls_iet = high2low_r_cls.detach()
+                    low2high_r_cls_iet = low2high_r_cls.detach()
                     high2low_r_label = torch.stack(
                         high2low_r_label, dim=0).to(torch.long)
                     low2high_r_label = torch.stack(
@@ -796,10 +796,10 @@ class PSGMask2FormerMultiDecoderHead(PSGMaskFormerHead):
                     high2low_r_cls_ie = high2low_r_cls.detach()
                     low2high_r_cls_ie = low2high_r_cls.detach()
                     for ie_idx in range(high2low_r_cls.shape[0]):
-                        high2low_r_cls_ie[ie_idx, high2low_r_label[ie_idx]] = high2low_r_cls[ie_idx, low2high_r_label[ie_idx]]  # noqa
-                        high2low_r_cls_ie[ie_idx, low2high_r_label[ie_idx]] = high2low_r_cls[ie_idx, high2low_r_label[ie_idx]]  # noqa
-                        low2high_r_cls_ie[ie_idx, high2low_r_label[ie_idx]] = low2high_r_cls[ie_idx, low2high_r_label[ie_idx]]  # noqa
-                        low2high_r_cls_ie[ie_idx, low2high_r_label[ie_idx]] = low2high_r_cls[ie_idx, high2low_r_label[ie_idx]]  # noqa
+                        high2low_r_cls_ie[ie_idx, high2low_r_label[ie_idx]] = high2low_r_cls_iet[ie_idx, low2high_r_label[ie_idx]]  # noqa
+                        high2low_r_cls_ie[ie_idx, low2high_r_label[ie_idx]] = high2low_r_cls_iet[ie_idx, high2low_r_label[ie_idx]]  # noqa
+                        low2high_r_cls_ie[ie_idx, high2low_r_label[ie_idx]] = low2high_r_cls_iet[ie_idx, low2high_r_label[ie_idx]]  # noqa
+                        low2high_r_cls_ie[ie_idx, low2high_r_label[ie_idx]] = low2high_r_cls_iet[ie_idx, high2low_r_label[ie_idx]]  # noqa
                     r_loss = (self.consistency_mse_loss(high2low_r_cls, low2high_r_cls_ie) + self.consistency_mse_loss(
                         low2high_r_cls, high2low_r_cls_ie)) * num_dec_layers * self.r_cls_loss_weight * self.consistency_loss_weight
                     loss_dict['consistency.r_loss'] = r_loss
