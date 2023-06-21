@@ -10,6 +10,9 @@ import copy
 import cv2
 import gc
 import numpy as np
+from skimage.segmentation import find_boundaries
+from panopticapi.utils import rgb2id, id2rgb
+from prettytable import PrettyTable
 
 import mmcv
 import torch
@@ -298,6 +301,9 @@ def main():
             img_file_list = [data['img_metas'][0].data[0][0]['filename']
                              for data in data_loader]
             vis_outputs(outputs, img_file_list, save_dir=args.vis)
+            # vis_outputs2(dataset, outputs, img_file_list, save_dir=args.vis)
+            # relational_semantic_overlap(
+            #     dataset, outputs, img_file_list, save_dir=args.vis)
         kwargs = {} if args.eval_options is None else args.eval_options
         if args.format_only:
             dataset.format_results(outputs, **kwargs)
@@ -514,6 +520,256 @@ def vis_outputs(outputs, img_file_list, save_dir='./vis_results', merge_vis=True
             save_path = os.path.join(save_dir, img_name)
             cv2.imwrite(save_path, merge_vis_img)
 
+
+'''
+PALETTE = [(220, 20, 60), (119, 11, 32), (0, 0, 142), (0, 0, 230),
+           (106, 0, 228), (0, 60, 100), (0, 80, 100), (0, 0, 70),
+           (0, 0, 192), (250, 170, 30), (100, 170, 30), (220, 220, 0),
+           (175, 116, 175), (250, 0, 30), (165, 42, 42), (255, 77, 255),
+           (0, 226, 252), (182, 182, 255), (0, 82, 0), (120, 166, 157),
+           (110, 76, 0), (174, 57, 255), (199, 100, 0), (72, 0, 118),
+           (255, 179, 240), (0, 125, 92), (209, 0, 151), (188, 208, 182),
+           (0, 220, 176), (255, 99, 164), (92, 0, 73), (133, 129, 255),
+           (78, 180, 255), (0, 228, 0), (174, 255, 243), (45, 89, 255),
+           (134, 134, 103), (145, 148, 174), (255, 208, 186),
+           (197, 226, 255), (171, 134, 1), (109, 63, 54), (207, 138, 255),
+           (151, 0, 95), (9, 80, 61), (84, 105, 51), (74, 65, 105),
+           (166, 196, 102), (208, 195, 210), (255, 109, 65), (0, 143, 149),
+           (179, 0, 194), (209, 99, 106), (5, 121, 0), (227, 255, 205),
+           (147, 186, 208), (153, 69, 1), (3, 95, 161), (163, 255, 0),
+           (119, 0, 170), (0, 182, 199), (0, 165, 120), (183, 130, 88),
+           (95, 32, 0), (130, 114, 135), (110, 129, 133), (166, 74, 118),
+           (219, 142, 185), (79, 210, 114), (178, 90, 62), (65, 70, 15),
+           (127, 167, 115), (59, 105, 106), (142, 108, 45), (196, 172, 0),
+           (95, 54, 80), (128, 76, 255), (201, 57, 1), (246, 0, 122),
+           (191, 162, 208), (255, 255, 128), (147, 211, 203),
+           (150, 100, 100), (168, 171, 172), (146, 112, 198),
+           (210, 170, 100), (92, 136, 89), (218, 88, 184), (241, 129, 0),
+           (217, 17, 255), (124, 74, 181), (70, 70, 70), (255, 228, 255),
+           (154, 208, 0), (193, 0, 92), (76, 91, 113), (255, 180, 195),
+           (106, 154, 176),
+           (230, 150, 140), (60, 143, 255), (128, 64, 128), (92, 82, 55),
+           (254, 212, 124), (73, 77, 174), (255, 160, 98), (255, 255, 255),
+           (104, 84, 109), (169, 164, 131), (225, 199, 255), (137, 54, 74),
+           (135, 158, 223), (7, 246, 231), (107, 255, 200), (58, 41, 149),
+           (183, 121, 142), (255, 73, 97), (107, 142, 35), (190, 153, 153),
+           (146, 139, 141),
+           (70, 130, 180), (134, 199, 156), (209, 226, 140), (96, 36, 108),
+           (96, 96, 96), (64, 170, 64), (152, 251, 152), (208, 229, 228),
+           (206, 186, 171), (152, 161, 64), (116, 112, 0), (0, 114, 143),
+           (102, 102, 156), (250, 141, 255)]
+
+
+file_client = mmcv.FileClient(**dict(backend='disk'))
+
+
+def vis_outputs2(dataset, outputs, img_file_list, save_dir='./vis_results', merge_vis=True, save_top_k=20):
+    if not os.path.exists(save_dir):
+        os.makedirs(save_dir)
+    fo = open('{}/output.txt'.format(save_dir), 'w')
+    for data, output, img_file in zip(dataset, outputs, img_file_list):
+        # if '000000496854' not in img_file:
+        #     continue
+
+        print(img_file)
+        fo.write(img_file+'\n')
+        img = cv2.imread(img_file)
+
+        # ground truth
+        pan_file = img_file.replace(
+            'val2017', 'panoptic_val2017').replace('.jpg', '.png')
+
+        pan_bytes = file_client.get(pan_file)
+        pan = mmcv.imfrombytes(pan_bytes,
+                               flag='color',
+                               channel_order='rgb').squeeze()
+        pan_id = rgb2id(pan)
+        pan_boundaries = find_boundaries(pan_id)
+
+        new_seg = copy.deepcopy(img)
+        segments_info = data['img_metas'][0].data['ann_info']['segments_info']
+        for idx, object in enumerate(segments_info):
+            object_id = object['id']
+            object_label = object['category_id']
+            index = np.where(pan_id == object_id)
+            new_seg[index] = PALETTE[object_label]
+
+        vis_img_gt = img * 0.5 + new_seg * 0.5
+        vis_img_gt[pan_boundaries] = [0, 0, 0]
+
+        img_name = img_file.split('/')[-1].replace('.jpg', '_gt.jpg')
+        save_path = os.path.join(save_dir, img_name)
+        cv2.imwrite(save_path, vis_img_gt)
+
+        print('ground truth')
+        fo.write('ground truth\n')
+        table = PrettyTable(['subject', 'object', 'relation'])
+        for triplet in data['img_metas'][0].data['ann_info']['rels']:
+            sub_idx = triplet[0]
+            sub_label = data['img_metas'][0].data['ann_info']['labels'][sub_idx]
+            obj_idx = triplet[1]
+            obj_label = data['img_metas'][0].data['ann_info']['labels'][obj_idx]
+            rel_label = triplet[2]
+            subject_name = object_classes[sub_label]
+            object_name = object_classes[obj_label]
+            relation_name = predicate_classes[rel_label - 1]
+            table.add_row(['{}_{}'.format(sub_idx, subject_name),
+                           '{}_{}'.format(obj_idx, object_name),
+                           relation_name])
+        print(table)
+        fo.write(table.get_string() + '\n')
+
+        # prediction
+        bboxes = output.refine_bboxes
+        labels = output.labels
+        rel_pairs = output.rel_pair_idxes
+        rel_dists = output.rel_dists
+        rel_labels = output.rel_labels
+        rel_scores = output.rel_scores
+        masks = output.masks
+        pan_seg = output.pan_results
+        rel_num = rel_labels.shape[0]
+        m_h, m_w = masks.shape[-2:]
+
+        if len(pan_seg.shape) == 3:
+            pan_seg = rgb2id(pan_seg)
+        boundaries = find_boundaries(pan_seg)
+        new_seg = copy.deepcopy(img)
+        for idx, (label, mask) in enumerate(zip(labels, masks)):
+            index = np.where(mask > 0)
+            new_seg[index] = PALETTE[label - 1]
+
+        vis_img = img * 0.5 + new_seg * 0.5
+        vis_img[boundaries] = [0, 0, 0]
+
+        img_name = img_file.split('/')[-1].replace('.jpg', '_pred.jpg')
+        save_path = os.path.join(save_dir, img_name)
+        cv2.imwrite(save_path, vis_img)
+
+        print('prediction')
+        fo.write('prediction\n')
+        table = PrettyTable(['subject', 'object', 'relation'])
+        for idx, (rel_pair, rel_label) in enumerate(zip(rel_pairs, rel_labels)):
+            if idx > save_top_k:
+                break
+            sub_idx = rel_pair[0]
+            sub_label = labels[sub_idx] - 1
+            obj_idx = rel_pair[1]
+            obj_label = labels[obj_idx] - 1
+            subject_name = object_classes[sub_label]
+            object_name = object_classes[obj_label]
+            relation_name = predicate_classes[rel_label - 1]
+            table.add_row(['{}_{}'.format(sub_idx, subject_name),
+                           '{}_{}'.format(obj_idx, object_name),
+                           relation_name])
+        print(table)
+        fo.write(table.get_string() + '\n')
+
+    fo.close()
+
+
+def relational_semantic_overlap(dataset, outputs, img_file_list, save_dir='./vis_results', merge_vis=True, save_top_k=20):
+    import pdb; pdb.set_trace()
+    if not os.path.exists(save_dir):
+        os.makedirs(save_dir)
+    fo = open('{}/output.txt'.format(save_dir), 'w')
+    for data, output, img_file in zip(dataset, outputs, img_file_list):
+        print(img_file)
+        fo.write(img_file+'\n')
+        img = cv2.imread(img_file)
+
+        # ground truth
+        pan_file = img_file.replace(
+            'val2017', 'panoptic_val2017').replace('.jpg', '.png')
+
+        pan_bytes = file_client.get(pan_file)
+        pan = mmcv.imfrombytes(pan_bytes,
+                               flag='color',
+                               channel_order='rgb').squeeze()
+        pan_id = rgb2id(pan)
+        pan_boundaries = find_boundaries(pan_id)
+
+        new_seg = copy.deepcopy(img)
+        segments_info = data['img_metas'][0].data['ann_info']['segments_info']
+        for idx, object in enumerate(segments_info):
+            object_id = object['id']
+            object_label = object['category_id']
+            index = np.where(pan_id == object_id)
+            new_seg[index] = PALETTE[object_label]
+
+        vis_img_gt = img * 0.5 + new_seg * 0.5
+        vis_img_gt[pan_boundaries] = [0, 0, 0]
+
+        img_name = img_file.split('/')[-1].replace('.jpg', '_gt.jpg')
+        save_path = os.path.join(save_dir, img_name)
+        cv2.imwrite(save_path, vis_img_gt)
+
+        print('ground truth')
+        fo.write('ground truth\n')
+        table = PrettyTable(['subject', 'object', 'relation'])
+        for triplet in data['img_metas'][0].data['ann_info']['rels']:
+            sub_idx = triplet[0]
+            sub_label = data['img_metas'][0].data['ann_info']['labels'][sub_idx]
+            obj_idx = triplet[1]
+            obj_label = data['img_metas'][0].data['ann_info']['labels'][obj_idx]
+            rel_label = triplet[2]
+            subject_name = object_classes[sub_label]
+            object_name = object_classes[obj_label]
+            relation_name = predicate_classes[rel_label - 1]
+            table.add_row(['{}_{}'.format(sub_idx, subject_name),
+                           '{}_{}'.format(obj_idx, object_name),
+                           relation_name])
+        print(table)
+        fo.write(table.get_string() + '\n')
+
+        # prediction
+        bboxes = output.refine_bboxes
+        labels = output.labels
+        rel_pairs = output.rel_pair_idxes
+        rel_dists = output.rel_dists
+        rel_labels = output.rel_labels
+        rel_scores = output.rel_scores
+        masks = output.masks
+        pan_seg = output.pan_results
+        rel_num = rel_labels.shape[0]
+        m_h, m_w = masks.shape[-2:]
+
+        if len(pan_seg.shape) == 3:
+            pan_seg = rgb2id(pan_seg)
+        boundaries = find_boundaries(pan_seg)
+        new_seg = copy.deepcopy(img)
+        for idx, (label, mask) in enumerate(zip(labels, masks)):
+            index = np.where(mask > 0)
+            new_seg[index] = PALETTE[label - 1]
+
+        vis_img = img * 0.5 + new_seg * 0.5
+        vis_img[boundaries] = [0, 0, 0]
+
+        img_name = img_file.split('/')[-1].replace('.jpg', '_pred.jpg')
+        save_path = os.path.join(save_dir, img_name)
+        cv2.imwrite(save_path, vis_img)
+
+        print('prediction')
+        fo.write('prediction\n')
+        table = PrettyTable(['subject', 'object', 'relation'])
+        for idx, (rel_pair, rel_label) in enumerate(zip(rel_pairs, rel_labels)):
+            if idx > save_top_k:
+                break
+            sub_idx = rel_pair[0]
+            sub_label = labels[sub_idx] - 1
+            obj_idx = rel_pair[1]
+            obj_label = labels[obj_idx] - 1
+            subject_name = object_classes[sub_label]
+            object_name = object_classes[obj_label]
+            relation_name = predicate_classes[rel_label - 1]
+            table.add_row(['{}_{}'.format(sub_idx, subject_name),
+                           '{}_{}'.format(obj_idx, object_name),
+                           relation_name])
+        print(table)
+        fo.write(table.get_string() + '\n')
+
+    fo.close()
+# '''
 
 if __name__ == '__main__':
     main()
