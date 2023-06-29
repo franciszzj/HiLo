@@ -1,3 +1,4 @@
+import os
 import os.path as osp
 import copy
 import random
@@ -709,5 +710,8 @@ class PanopticSceneGraphDataset(CocoPanopticDataset):
 
         # 4. save
         vis_image = np.concatenate((gt_vis_image, pred_vis_image), axis=1)
+        VIZ_DIR = os.getenv('VIZ_DIR', 'viz')
+        if not os.path.exists('./{}'.format(VIZ_DIR)):
+            os.makedirs('./{}'.format(VIZ_DIR))
         cv2.imwrite(
-            './viz/{}'.format(data_info['filename'].split('/')[-1]), vis_image)
+            './{}/{}'.format(VIZ_DIR, data_info['filename'].split('/')[-1]), vis_image)
