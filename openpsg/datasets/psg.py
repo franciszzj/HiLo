@@ -618,7 +618,7 @@ class PanopticSceneGraphDataset(CocoPanopticDataset):
         pred_pan_id = prediction.pan_results
         pred_pan_boundaries = find_boundaries(pred_pan_id)
         pred_pan_seg = id2rgb(pred_pan_id)
-        
+
         # 1.5 prepare ious
         gt_masks_array = torch.from_numpy(
             np.stack(gt_masks, axis=0)).flatten(1)
@@ -689,6 +689,8 @@ class PanopticSceneGraphDataset(CocoPanopticDataset):
             sub_cls = pred_labels[sub_idx]
             obj_cls = pred_labels[obj_idx]
             # construct rel_color, rel_thickness
+            rel_color = (0, 0, 0)
+            rel_thickness = 1
             for gt_idx in range(gt_rels.shape[0]):
                 gt_sub_idx, gt_obj_idx, gt_rel_idx = gt_rels[gt_idx]
                 gt_sub_cls = gt_labels[gt_sub_idx]
@@ -697,12 +699,6 @@ class PanopticSceneGraphDataset(CocoPanopticDataset):
                     rel_color = REL_PALETTE[gt_idx % 20]
                     if gt_rel_idx == rel_idx:
                         rel_thickness = 2
-                    else:
-                        rel_thickness = 1
-                    break
-                else:
-                    rel_color = (0, 0, 0)
-                    rel_thickness = 1
             sub_name = self.CLASSES[sub_cls - 1]
             obj_name = self.CLASSES[obj_cls - 1]
             rel_name = self.PREDICATES[rel_idx - 1]
