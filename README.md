@@ -11,7 +11,14 @@ Pretrained models are directly converted from [Mask2Former](https://github.com/o
 python tools/change_model.py path/to/pretrained/model
 ```
 
-## Train
+
+## Configs
+- R50: configs/psgmask2former/psgmask2former_r50_hilo_baseline.py, configs/psgmask2former/psgmask2former_r50_hilo.py
+- Swin Base: configs/psgmask2former/psgmask2former_swin_b_hilo_baseline.py, configs/psgmask2former/psgmask2former_swin_b_hilo.py
+- Swin Large: configs/psgmask2former/psgmask2former_swin_l_hilo_baseline.py, configs/psgmask2former/psgmask2former_swin_l_hilo.py
+
+
+## Training
 Train HiLo baseline:
 ```.bash
 PYTHONPATH="$(dirname $0)/..":$PYTHONPATH \
@@ -51,7 +58,7 @@ python -m torch.distributed.launch \
   --launcher pytorch
 ```
 
-## Test
+## Testing and Evaluation
 ```.bash
 PYTHONPATH='.':$PYTHONPATH \
 python tools/test.py \
