@@ -24,7 +24,7 @@ python tools/change_model.py path/to/pretrained/model
 
 
 ## Configs
-Config path: configs/psgmask2former/
+Config path: ./configs/psgmask2former/
 - **R50**: psgmask2former_r50_hilo_baseline.py, psgmask2former_r50_hilo.py
 - **Swin Base**: psgmask2former_swin_b_hilo_baseline.py, psgmask2former_swin_b_hilo.py
 - **Swin Large**: psgmask2former_swin_l_hilo_baseline.py, psgmask2former_swin_l_hilo.py
@@ -74,7 +74,7 @@ python tools/test.py path/to/hilo/config path/to/checkpoint --eval sgdet_PQ --cf
 HiLo is developed based on [OpenPSG](https://github.com/Jingkang50/OpenPSG) and [MMDetection](https://github.com/open-mmlab/mmdetection). Thanks for their great works!
 
 
-## Reference
+## Citation
 If you find this repository useful, please cite:
 
 ```
