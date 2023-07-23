@@ -37,15 +37,20 @@ python tools/change_model.py path/to/pretrained/model
 ```
 
 ## Configs
-Config path: ./configs/psgmask2former/
-- **R50**: psgmask2former_r50_hilo_baseline.py, psgmask2former_r50_hilo.py
-- **Swin Base**: psgmask2former_swin_b_hilo_baseline.py, psgmask2former_swin_b_hilo.py
-- **Swin Large**: psgmask2former_swin_l_hilo_baseline.py, psgmask2former_swin_l_hilo.py
+Config path: `./configs/psgmask2former/`
+- **R50**: `psgmask2former_r50_hilo_baseline.py`, `psgmask2former_r50_hilo.py`
+- **Swin Base**: `psgmask2former_swin_b_hilo_baseline.py`, `psgmask2former_swin_b_hilo.py`
+- **Swin Large**: `psgmask2former_swin_l_hilo_baseline.py`, `psgmask2former_swin_l_hilo.py`
+
+Hyperparameter:
+
+- **EVAL_PAN_RELS**: For details, refer to [issue#30](https://github.com/Jingkang50/OpenPSG/issues/30), [issue#60](https://github.com/Jingkang50/OpenPSG/issues/60), and [issue#100](https://github.com/Jingkang50/OpenPSG/issues/100).
+- **model.bbox_head.test_forward_output_type**: `'high2low'`, `'low2high'`, and `'merge'`.
 
 ## Training
 Train HiLo baseline:
 ```.bash
-PYTHONPATH="$(dirname $0)/..":$PYTHONPATH \
+PYTHONPATH='.':$PYTHONPATH \
 EVAL_PAN_RELS=True \
 python -m torch.distributed.launch --nproc_per_node=$GPUS --master_port=$PORT \
   tools/train.py path/to/hilo_baseline/config --auto-resume --no-validate --seed 666 --launcher pytorch
@@ -59,7 +64,7 @@ python tools/data_prepare/ietrans.py path/to/hilo_baseline/config path/to/checkp
 
 Train HiLo:
 ```.bash
-PYTHONPATH="$(dirname $0)/..":$PYTHONPATH \
+PYTHONPATH='.':$PYTHONPATH \
 EVAL_PAN_RELS=True \
 python -m torch.distributed.launch --nproc_per_node=$GPUS --master_port=$PORT \
   tools/train.py path/to/hilo/config --auto-resume --no-validate --seed 666 --launcher pytorch
