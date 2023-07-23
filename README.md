@@ -19,7 +19,7 @@ a) HiLo relation swapping module swaps the multiple relations in the subject-obj
 b) Input data into our HiLo framework with HiLo baseline model, there are two branches, namely H-L decoder and L-H decoder, which learn H-L Data and L-H Data respectively.
 c) In addition to task losses for PSG, we propose HiLo prediction alignment, which includes subject-object consistency loss and relation consistency loss, so that the parallel branch can be better optimized.
 
-# Results
+## Results
 ![hilo_results](assets/hilo_results.png)
 Comparison between our HiLo and other methods on the PSG dataset. Our method shows superior performance compared to all previous methods.
 
