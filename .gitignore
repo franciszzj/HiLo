@@ -149,7 +149,4 @@ tools/custom_tools
 scripts/_depreciated
 # configs/detseg
 
-ce7454.zip
-ce7454_tools/
-ce7454/checkpoints
-ce7454/results
+!assets/*.png
