@@ -86,6 +86,20 @@ EVAL_PAN_RELS=True \
 python tools/test.py path/to/hilo/config path/to/checkpoint --eval sgdet_PQ --cfg-options model.bbox_head.test_forward_output_type='merge'
 ```
 
+## Pretrained Data and Models
+For the convenience to follow HiLo, we provide the PSG json file processed through IETrans, as well as a trained model and the config file saved from the training process for reference.
+
+Note:
+1. For the R50 model, we used `use_shared_query=True`. However, after multiple experiments, we found that the results for `use_shared_query=True/False` are similar. Therefore, we did not provide an R50 model with `use_shared_query=False`.
+While for the SwinB/SwinL models, they are `use_shared_query=False` models.
+2. The results reported in the paper are with `EVAL_PAN_RELS=False`, for a fairer comparison with methods like PSGTR. However, we have implemented a more efficient post-processing method, where the performance with `EVAL_PAN_RELS=True` is similar to that with `EVAL_PAN_RELS=False`.
+
+| Backbone | PSG file (IETrans processed) | Config | Model |
+|----------|------------------------------|--------|-------|
+| R50      | [psg_ietrans.json](https://emckclac-my.sharepoint.com/:u:/g/personal/k21163430_kcl_ac_uk/EdurlGM4EVdDmvIXs23zpi4BBP5oHK9BExHgtxbPU28Sag?e=EzAPlv) | [hilo_r50.py](https://emckclac-my.sharepoint.com/:u:/g/personal/k21163430_kcl_ac_uk/EQgNdXz5tMpDnV7LoaH8bO0B-UG1lzkik6bxaF3v-ULWEg?e=CEytJi) | [hilo_r50-965067f0.pth](https://emckclac-my.sharepoint.com/:u:/g/personal/k21163430_kcl_ac_uk/EVkhUGNTRPREvbBp68YWrI0BV0hmngzfaeBnCCQ_oaFn8A?e=xHVqpn) |
+| SwinB    | [psg_ietrans_swin_b.json](https://emckclac-my.sharepoint.com/:u:/g/personal/k21163430_kcl_ac_uk/EfxA-a_55ulGqSjnE8G-IvQBjEH1dyoVEyTkXqrH6lUfxA?e=VhV3LG) | [hilo_swin_b.py](https://emckclac-my.sharepoint.com/:u:/g/personal/k21163430_kcl_ac_uk/ESPrXmP4Ax9BmDKqUOXxlnMB88VCxZo9O8M1Wyiu8HUS9A?e=MoFxH0) | [hilo_swin_b-899ed937.pth](https://emckclac-my.sharepoint.com/:u:/g/personal/k21163430_kcl_ac_uk/EchhOn3RcUxFvb2dE1xV4JABjKWcEJ0TRF8Sa8Il6dHvRQ?e=1PPuPl) |
+| SwinL    | [psg_ietrans_swin_l.json](https://emckclac-my.sharepoint.com/:u:/g/personal/k21163430_kcl_ac_uk/EXqpMu9AKWtLgL1scGWhOCgBn2dE9eHHang5o5g_EHZGiQ?e=hMg50O) | [hilo_swin_l.py](https://emckclac-my.sharepoint.com/:u:/g/personal/k21163430_kcl_ac_uk/EYhp5zW0NDNFpAON6rdQuYEBFww9K9CN5DSIsXBhUmkQ2A?e=psB9pv) | [hilo_swin_l-050d5d1f.pth](https://emckclac-my.sharepoint.com/:u:/g/personal/k21163430_kcl_ac_uk/EQRJS4dqgdlDorob9zsZZtMBAxvIF8ih8WGFAqo0uPKAKw?e=ijKX7H) |
+
 ## Acknowledgements
 HiLo is developed based on [OpenPSG](https://github.com/Jingkang50/OpenPSG) and [MMDetection](https://github.com/open-mmlab/mmdetection). Thanks for their great works!
 
