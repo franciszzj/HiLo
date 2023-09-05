@@ -86,7 +86,7 @@ EVAL_PAN_RELS=True \
 python tools/test.py path/to/hilo/config path/to/checkpoint --eval sgdet_PQ --cfg-options model.bbox_head.test_forward_output_type='merge'
 ```
 
-## Pretrained Data and Models
+## Processed Data and Trained Models
 For the convenience to follow HiLo, we provide the PSG json file processed through IETrans, as well as a trained model and the config file saved from the training process for reference.
 
 Note:
