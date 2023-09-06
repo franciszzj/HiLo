@@ -1,5 +1,7 @@
 # HiLo: Exploiting High Low Frequency Relations for Unbiased Panoptic Scene Graph Generation
 
+[![PWC](https://img.shields.io/endpoint.svg?url=https://paperswithcode.com/badge/hilo-exploiting-high-low-frequency-relations/panoptic-scene-graph-generation-on-psg)](https://paperswithcode.com/sota/panoptic-scene-graph-generation-on-psg?p=hilo-exploiting-high-low-frequency-relations)
+
 ICCV 2023, official code implementation, [arXiv](https://arxiv.org/abs/2303.15994)
 
 ## Abstract
