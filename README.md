@@ -59,6 +59,8 @@ python -m torch.distributed.launch --nproc_per_node=$GPUS --master_port=$PORT \
 ```
 
 Obtaining a new training file through IETrans:
+
+Note: you should also add `gt_xxx` in the `test_pipeline`. You can refer to [example_config](https://github.com/franciszzj/HiLo/blob/main/configs/psgmask2former/psgmask2former_r50_add_label_at_test.py#L185) for specifics.
 ```.bash
 PYTHONPATH='.':$PYTHONPATH \
 python tools/data_prepare/ietrans.py path/to/hilo_baseline/config path/to/checkpoint path/to/output
