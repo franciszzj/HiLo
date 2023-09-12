@@ -31,7 +31,13 @@ Visualization of panoptic segmentations and the top 20 predicted triplets compar
 
 ## Preparation
 
-Please follow [OpenPSG](https://github.com/Jingkang50/OpenPSG#get-started).
+Dev environment:
+```
+git clone https://github.com/franciszzj/HiLo.git
+cd HiLo
+conda create --name hilo --file spec-file.txt
+conda activate hilo
+```
 
 Pretrained models are directly converted from [Mask2Former](https://github.com/open-mmlab/mmdetection/tree/main/configs/mask2former) using [this code](./tools/change_model.py).
 ```.bash
