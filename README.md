@@ -117,10 +117,12 @@ HiLo is developed based on [OpenPSG](https://github.com/Jingkang50/OpenPSG) and 
 If you find this repository useful, please cite:
 
 ```
-@inproceedings{zhou2023hilo,
-  title={HiLo: Exploiting High Low Frequency Relations for Unbiased Panoptic Scene Graph Generation},
-  author={Zhou, Zijian and Shi, Miaojing and Caesar, Holger},
-  booktitle={International Conference on Computer Vision (ICCV)},
-  year={2023}
+@InProceedings{Zhou_2023_ICCV,
+    author    = {Zhou, Zijian and Shi, Miaojing and Caesar, Holger},
+    title     = {HiLo: Exploiting High Low Frequency Relations for Unbiased Panoptic Scene Graph Generation},
+    booktitle = {Proceedings of the IEEE/CVF International Conference on Computer Vision (ICCV)},
+    month     = {October},
+    year      = {2023},
+    pages     = {21637-21648}
 }
 ```
