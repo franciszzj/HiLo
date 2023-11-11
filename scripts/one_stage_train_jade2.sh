@@ -13,7 +13,7 @@ nvcc --version
 
 CONFIG=$1
 GPUS=8
-PORT=29500
+PORT=$(shuf -i 10000-65535 -n 1)
 
 export PYTORCH_CUDA_ALLOC_CONF=max_split_size_mb:128
 

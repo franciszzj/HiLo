@@ -13,7 +13,7 @@ nvcc --version
 
 CONFIG=$1
 GPUS=1
-PORT=29500
+PORT=$(shuf -i 10000-65535 -n 1)
 
 PYTHONPATH="$(dirname $0)/..":$PYTHONPATH \
 EVAL_PAN_RELS=False \
